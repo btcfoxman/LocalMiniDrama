@@ -29,6 +29,12 @@ function legacyYamlHubSection(cfg) {
 function normalizeMaterialHubToken(raw) {
   let s = String(raw || '').trim();
   if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
+  // 兼容误填为 "token" / 'token' 的场景
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  // 去除不可见空白，避免网关把 header 判定为无效
+  s = s.replace(/[\r\n\t]/g, '').trim();
   return s;
 }
 
@@ -138,6 +144,8 @@ async function hubJson(path, ctx, { method, body, log } = {}) {
     method: method || 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
+      // 某些有缺陷的中转实现会错误地大小写敏感，这里双写做兼容
+      authorization: `Bearer ${token}`,
       Accept: 'application/json',
     },
   };

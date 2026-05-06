@@ -148,6 +148,7 @@ function modelArkAsset(log) {
           sign_region: body.sign_region,
           sign_service: body.sign_service,
           session_token: body.session_token,
+          project_name: body.project_name,
         },
         log
       );

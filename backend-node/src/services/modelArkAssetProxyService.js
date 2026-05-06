@@ -23,6 +23,31 @@ function normalizeBaseUrl(raw) {
   return s;
 }
 
+/**
+ * 仅主机、无路径时补全 /api/v3，与控制台 OpenAPI 一致；否则 IAM/路由可能不按预期解析 ProjectName。
+ */
+function ensureArkOpenApiBasePath(raw) {
+  const s0 = String(raw || '').trim();
+  if (!s0) return s0;
+  let u;
+  try {
+    u = new URL(s0.replace(/\/+$/, ''));
+  } catch {
+    return s0;
+  }
+  const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+  const host = (u.host || '').toLowerCase();
+  const looksArk =
+    /(^|\.)ark\./.test(host) ||
+    host.includes('byteplus') ||
+    host.includes('volces.com');
+  if (looksArk && (path === '' || path === '/')) {
+    u.pathname = '/api/v3';
+    return u.toString().replace(/\/+$/, '');
+  }
+  return s0.replace(/\/+$/, '');
+}
+
 function normalizeBearerToken(raw) {
   let k = String(raw || '').trim();
   if (!k) return '';
@@ -46,7 +71,7 @@ function inferSignRegion(host, explicit) {
  *   控制面接口须使用 **auth_mode: volc_sign**（Access Key 签名），推理用的 ARK API Key + Bearer 会报 Invalid Authorization。
  * - asset_subpath / flat：部分中转仍可用 Bearer。
  */
-function buildRequestUrl(base, pathMode, act, apiVersion) {
+function buildRequestUrl(base, pathMode, act, apiVersion, projectName) {
   const ver = (apiVersion || '2024-01-01').toString().trim() || '2024-01-01';
   if (pathMode === 'flat') {
     return `${base}/${encodeURIComponent(act)}`;
@@ -62,6 +87,8 @@ function buildRequestUrl(base, pathMode, act, apiVersion) {
   }
   u.searchParams.set('Action', act);
   u.searchParams.set('Version', ver);
+  const pn = (projectName || '').toString().trim();
+  if (pn) u.searchParams.set('ProjectName', pn);
   return u.toString();
 }
 
@@ -96,16 +123,21 @@ async function fetchSignedOpenApi({
   sessionToken,
   signRegion,
   signService,
+  projectName,
 }) {
   const ver = (apiVersion || '2024-01-01').toString().trim() || '2024-01-01';
   const { protocol, host, pathname } = parseSignedOpenApiUrl(base);
   const bodyStr = JSON.stringify(bodyObj && typeof bodyObj === 'object' ? bodyObj : {});
 
+  const params = { Action: action, Version: ver };
+  const pn = (projectName || '').toString().trim();
+  if (pn) params.ProjectName = pn;
+
   const request = {
     region: inferSignRegion(host, signRegion),
     method: 'POST',
     pathname,
-    params: { Action: action, Version: ver },
+    params,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
     },
@@ -162,13 +194,14 @@ async function callModelArkAsset(opts, log) {
     sign_region,
     sign_service,
     session_token,
+    project_name,
   } = opts;
 
   if (!action || typeof action !== 'string') throw new Error('缺少 action');
   const act = action.trim();
   if (!ALLOWED_ACTIONS.has(act)) throw new Error('不支持的 action: ' + act);
 
-  const base = normalizeBaseUrl(base_url);
+  const base = normalizeBaseUrl(ensureArkOpenApiBasePath(base_url));
   const pathMode = (path_mode || 'open_api_query').toString();
   const modeAuth = (auth_mode || 'bearer').toString();
 
@@ -177,7 +210,11 @@ async function callModelArkAsset(opts, log) {
     throw new Error('不支持的 http_method');
   }
 
-  const bodyObj = body && typeof body === 'object' ? body : {};
+  const pnScope = (project_name || '').toString().trim();
+  let bodyObj = body && typeof body === 'object' ? { ...body } : {};
+  if (pnScope && (bodyObj.ProjectName === undefined || bodyObj.ProjectName === null)) {
+    bodyObj.ProjectName = pnScope;
+  }
   let res;
 
   if (modeAuth === 'volc_sign') {
@@ -199,11 +236,12 @@ async function callModelArkAsset(opts, log) {
       sessionToken: session_token,
       signRegion: sign_region,
       signService: sign_service,
+      projectName: pnScope,
     });
   } else {
     const token = normalizeBearerToken(api_key);
     if (!token) throw new Error('缺少 api_key');
-    const url = buildRequestUrl(base, pathMode, act, api_version);
+    const url = buildRequestUrl(base, pathMode, act, api_version, pnScope);
     res = await fetchBearer(url, method, token, bodyObj);
   }
 

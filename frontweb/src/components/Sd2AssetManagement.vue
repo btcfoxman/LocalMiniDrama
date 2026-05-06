@@ -17,7 +17,12 @@
 
     <el-form label-width="120px" class="sd2-form">
       <el-form-item label="Base URL">
-        <el-input v-model="baseUrl" placeholder="如 https://ark.cn-beijing.volces.com/api/v3" clearable />
+        <el-input
+          v-model="baseUrl"
+          placeholder="须含 /api/v3，如 https://ark.ap-southeast-1.byteplusapi.com/api/v3（仅域名时后端会尝试自动补全）"
+          clearable
+        />
+        <p class="field-hint">OpenAPI 与推理共用前缀一般为 <code>/api/v3</code>；若只填域名可能导致路由不对、工程名不生效。</p>
       </el-form-item>
       <el-form-item label="鉴权方式">
         <el-radio-group v-model="authMode">
@@ -50,6 +55,17 @@
       </el-form-item>
       <el-form-item label="API Version">
         <el-input v-model="apiVersion" placeholder="默认 2024-01-01（仅官方 OpenAPI 模式使用）" clearable />
+      </el-form-item>
+      <el-form-item v-if="pathMode === 'open_api_query'" label="工程 / 项目名">
+        <el-input
+          v-model="projectName"
+          placeholder="与控制台「项目」标识完全一致（区分大小写、下划线等）"
+          clearable
+        />
+        <p class="field-hint">
+          会写入 <strong>Query</strong> 与 <strong>JSON Body</strong> 的 <code>ProjectName</code>（与 Action 一并签名）。
+          若仍报 403 且文案里是 <code>project/*</code>，多为 IAM 未授权该动作；请确认策略里资源是否包含你的工程（或 <code>project/*</code>），错误提示不一定替换为具体工程名。
+        </p>
       </el-form-item>
       <el-form-item label="model（可选）">
         <el-input v-model="billingModel" placeholder="部分中转要求计费模型，如 volc-asset；官方直连可留空" clearable />
@@ -232,6 +248,8 @@ const baseUrl = ref('')
 const apiKey = ref('')
 const pathMode = ref('open_api_query')
 const apiVersion = ref('2024-01-01')
+/** OpenAPI 可选查询参数 ProjectName（与控制台项目对应，便于 IAM 精确到 project/某工程 而非 project/*） */
+const projectName = ref('')
 const authMode = ref('volc_sign')
 const accessKeyId = ref('')
 const secretAccessKey = ref('')
@@ -377,6 +395,9 @@ async function call(action, payload, opts = {}) {
     auth_mode: authMode.value,
     payload: mergeBillingModel(payload, withBillingModel),
   }
+  if (pathMode.value === 'open_api_query' && projectName.value.trim()) {
+    body.project_name = projectName.value.trim()
+  }
   if (authMode.value === 'bearer') {
     body.api_key = apiKey.value
   } else {
@@ -398,6 +419,10 @@ async function refreshGroups() {
     const body = {
       PageNumber: 1,
       PageSize: 50,
+      /** Filter、Filter.GroupType 均为官方 ListAssetGroups 必填；AIGC 为私有资产库常用类型 */
+      Filter: {
+        GroupType: 'AIGC',
+      },
     }
     const data = await call('ListAssetGroups', body, { withBillingModel: true })
     lastListGroupsPayload.value = data
@@ -426,6 +451,7 @@ async function refreshAssets() {
       PageNumber: 1,
       PageSize: 50,
       Filter: {
+        GroupType: 'AIGC',
         GroupIds: [gid],
       },
     }
