@@ -55,7 +55,11 @@ function routes(db, log, cfg) {
             }
           } catch (_) {}
         }
-        response.success(res, { local_path: result.local_path, url: result.local_path ? '/static/' + result.local_path : '', tts_kind: kind });
+        response.success(res, {
+          local_path: result.local_path,
+          url: result.audio_url || (result.local_path ? '/static/' + result.local_path : ''),
+          tts_kind: kind,
+        });
       } catch (err) {
         log.error('audio extract', { error: err.message });
         response.internalError(res, err.message);
@@ -91,7 +95,7 @@ function routes(db, log, cfg) {
               );
             } catch (_) {}
           }
-          results.push({ storyboard_id: sbId, local_path: result.local_path });
+          results.push({ storyboard_id: sbId, local_path: result.local_path, url: result.audio_url || '' });
         } catch (err) {
           results.push({ storyboard_id: sbId, error: err.message });
         }

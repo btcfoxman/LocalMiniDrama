@@ -102,6 +102,7 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   taskService.updateTaskStatus(db, taskId, 'processing', 80, '正在保存图片...');
 
   let localPath = null;
+  let finalImageUrl = result.image_url;
   try {
     const storagePath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
@@ -115,6 +116,9 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       'prop_' + propId,
       projectSubdir
     );
+    if (localPath) {
+      finalImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '') || result.image_url;
+    }
   } catch (_) {}
 
   const now = new Date().toISOString();
@@ -129,21 +133,21 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   try {
     db.prepare(
       'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?'
-    ).run(result.image_url, localPath, extraJson, now, propId);
+    ).run(finalImageUrl, localPath, extraJson, now, propId);
   } catch (e) {
     if ((e.message || '').includes('extra_images')) {
-      db.prepare('UPDATE props SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
+      db.prepare('UPDATE props SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(finalImageUrl, localPath, now, propId);
     } else {
       throw e;
     }
   }
 
   taskService.updateTaskResult(db, taskId, {
-    image_url: result.image_url,
+    image_url: finalImageUrl,
     local_path: localPath,
     prop_id: propId,
   });
-  log.info('Prop image generation completed', { prop_id: propId, image_url: result.image_url, local_path: localPath });
+  log.info('Prop image generation completed', { prop_id: propId, image_url: finalImageUrl, local_path: localPath });
 }
 
 function generatePropImage(db, log, propId, opts) {

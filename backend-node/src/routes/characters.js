@@ -109,7 +109,7 @@ function routes(db, cfg, log, uploadService) {
         response.internalError(res, err.message);
       }
     },
-    uploadImage: (req, res) => {
+    uploadImage: async (req, res) => {
       if (!req.file || !req.file.buffer) {
         return response.badRequest(res, '请选择文件');
       }
@@ -123,7 +123,7 @@ function routes(db, cfg, log, uploadService) {
           .prepare('SELECT drama_id FROM characters WHERE id = ? AND deleted_at IS NULL')
           .get(Number(req.params.id));
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, charRow?.drama_id);
-        const { url, local_path } = uploadService.uploadFile(
+        const { url, local_path } = await uploadService.uploadFile(
           storagePath,
           baseUrl,
           log,
@@ -133,7 +133,7 @@ function routes(db, cfg, log, uploadService) {
           'characters',
           projectSubdir
         );
-        const out = characterLibraryService.uploadCharacterImage(db, log, req.params.id, url);
+        const out = characterLibraryService.uploadCharacterImage(db, log, req.params.id, url, { local_path });
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           return response.badRequest(res, out.error);

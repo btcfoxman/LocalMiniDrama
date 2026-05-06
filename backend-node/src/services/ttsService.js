@@ -165,9 +165,15 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   const filePath = path.join(audioDir, filename);
   fs.writeFileSync(filePath, audioBuffer);
   const localPath = `audio/${filename}`;
+  let audioUrl = '';
+  try {
+    const uploadService = require('./uploadService');
+    audioUrl = await uploadService.uploadLocalPathToStorage(storage_base, localPath, 'audio/mpeg', log)
+      || uploadService.buildPublicUrl(localPath);
+  } catch (_) {}
   log.info('[TTS] 合成完成', { storyboard_id, local_path: localPath, provider });
   try { const cs = require('./cloudService'); cs.reportUsage('tts', ttsModel || '', '', 0); } catch (_) {}
-  return { local_path: localPath };
+  return { local_path: localPath, audio_url: audioUrl };
 }
 
 module.exports = { synthesize };

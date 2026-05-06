@@ -4,6 +4,28 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const { randomUUID } = require('crypto');
+const objectStorage = require('./objectStorageService');
+
+function loadStorageConfig() {
+  try {
+    const { loadConfig } = require('../config');
+    return loadConfig().storage || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function buildPublicUrl(localPath, baseUrl = '') {
+  const storage = loadStorageConfig();
+  const cleanPath = objectStorage.normalizeKey(localPath);
+  if (!cleanPath) return '';
+  if (objectStorage.isS3Storage(storage)) {
+    return objectStorage.publicUrlForKey(storage, cleanPath);
+  }
+  return baseUrl
+    ? `${baseUrl.replace(/\/$/, '')}/${cleanPath}`
+    : `/static/${cleanPath}`;
+}
 
 /**
  * 用 Node.js 原生 http/https 模块下载 URL 到 Buffer。
@@ -64,17 +86,52 @@ function resolveCategoryPaths(storagePath, category, projectSubdir) {
   return { dir: path.join(storagePath, category), relPrefix: category };
 }
 
-function uploadFile(storagePath, baseUrl, log, fileBuffer, originalName, mimeType, category, projectSubdir = null) {
+async function saveBufferToStorage(storagePath, relativePath, buffer, mimeType, log) {
+  const cleanPath = objectStorage.normalizeKey(relativePath);
+  const filePath = path.join(storagePath, cleanPath);
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, buffer);
+  const storage = loadStorageConfig();
+  if (objectStorage.isS3Storage(storage)) {
+    return objectStorage.uploadBuffer(storage, cleanPath, buffer, mimeType, log);
+  }
+  return buildPublicUrl(cleanPath, storage.base_url || '');
+}
+
+async function uploadLocalPathToStorage(storagePath, relativePath, mimeType, log) {
+  const cleanPath = objectStorage.normalizeKey(relativePath);
+  const filePath = path.join(storagePath, cleanPath);
+  if (!fs.existsSync(filePath)) return null;
+  const buffer = fs.readFileSync(filePath);
+  return saveBufferToStorage(storagePath, cleanPath, buffer, mimeType, log);
+}
+
+async function ensureLocalFile(storagePath, relativePath, log) {
+  const cleanPath = objectStorage.normalizeKey(relativePath);
+  if (!cleanPath) return null;
+  const filePath = path.join(storagePath, cleanPath);
+  if (fs.existsSync(filePath)) return filePath;
+  const storage = loadStorageConfig();
+  if (!objectStorage.isS3Storage(storage)) return null;
+  try {
+    await objectStorage.downloadToFile(storage, cleanPath, filePath, log);
+    return fs.existsSync(filePath) ? filePath : null;
+  } catch (e) {
+    log?.warn?.('[storage] download object to cache failed', { key: cleanPath, error: e.message });
+    return null;
+  }
+}
+
+async function uploadFile(storagePath, baseUrl, log, fileBuffer, originalName, mimeType, category, projectSubdir = null) {
   const { dir: categoryPath, relPrefix } = resolveCategoryPaths(storagePath, category, projectSubdir);
   ensureDir(categoryPath);
   const ext = path.extname(originalName) || '.png';
   const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
   const name = `${timestamp}_${randomUUID()}${ext}`;
-  const filePath = path.join(categoryPath, name);
-  fs.writeFileSync(filePath, fileBuffer);
   const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
-  const url = baseUrl ? `${baseUrl.replace(/\/$/, '')}/${relativePath}` : `/static/${relativePath}`;
-  log.info('File uploaded', { path: filePath, url });
+  const url = await saveBufferToStorage(storagePath, relativePath, fileBuffer, mimeType, log)
+    || buildPublicUrl(relativePath, baseUrl);
+  log.info('File uploaded', { path: path.join(categoryPath, name), url });
   return { url, local_path: relativePath };
 }
 
@@ -127,9 +184,14 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
       ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
     }
     const name = `${prefix}${prefix ? '_' : ''}${randomUUID().slice(0, 8)}.${ext}`;
-    const filePath = path.join(categoryPath, name);
-    fs.writeFileSync(filePath, buffer);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
+    await saveBufferToStorage(
+      storagePath,
+      relativePath,
+      buffer,
+      `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+      log
+    );
     log.info('Image saved to local', { category, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return relativePath;
   } catch (e) {
@@ -200,11 +262,23 @@ async function uploadLocalImageToProxy(storagePath, localPathOrUrl, log, tag) {
       const afterStatic = localPathOrUrl.split('/static/')[1];
       if (afterStatic && storagePath) {
         filePath = path.join(storagePath, afterStatic.replace(/^\//, ''));
+        if (!fs.existsSync(filePath)) {
+          filePath = await ensureLocalFile(storagePath, afterStatic, log);
+        }
+      } else if (storagePath) {
+        const storage = loadStorageConfig();
+        const objectKey = objectStorage.keyFromPublicUrl(storage, localPathOrUrl);
+        if (objectKey) {
+          filePath = await ensureLocalFile(storagePath, objectKey, log);
+        }
       }
     } else if (localPathOrUrl && storagePath) {
       filePath = path.isAbsolute(localPathOrUrl)
         ? localPathOrUrl
         : path.join(storagePath, localPathOrUrl.replace(/^\//, ''));
+      if (!fs.existsSync(filePath) && !path.isAbsolute(localPathOrUrl)) {
+        filePath = await ensureLocalFile(storagePath, localPathOrUrl, log);
+      }
     }
     if (!filePath || !fs.existsSync(filePath)) {
       log.warn('[图床上传] 本地文件不存在', { tag, filePath });
@@ -226,4 +300,8 @@ module.exports = {
   downloadImageToLocal,
   uploadToImageProxy,
   uploadLocalImageToProxy,
+  saveBufferToStorage,
+  uploadLocalPathToStorage,
+  ensureLocalFile,
+  buildPublicUrl,
 };

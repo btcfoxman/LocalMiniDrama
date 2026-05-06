@@ -211,7 +211,16 @@ function uploadCharacterImage(db, log, characterId, imageUrl, opts = {}) {
     seedance2AssetGuards.markStaleOnCharacterMainImageDrift(db, log, charRow, { image_url: imageUrl });
   }
   const now = new Date().toISOString();
-  db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(imageUrl || null, now, Number(characterId));
+  if (opts.local_path !== undefined) {
+    db.prepare('UPDATE characters SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
+      imageUrl || null,
+      opts.local_path || null,
+      now,
+      Number(characterId)
+    );
+  } else {
+    db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(imageUrl || null, now, Number(characterId));
+  }
   log.info('Character image uploaded', { character_id: characterId });
   return { ok: true };
 }

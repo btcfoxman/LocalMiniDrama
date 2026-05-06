@@ -25,7 +25,7 @@ function routes(cfg, log, db) {
   const singleUpload = upload.single('file');
   return {
     multerSingle: singleUpload,
-    uploadImage: (req, res) => {
+    uploadImage: async (req, res) => {
       if (!req.file || !req.file.buffer) {
         return response.badRequest(res, '请选择文件');
       }
@@ -46,7 +46,7 @@ function routes(cfg, log, db) {
             projectSubdir = storageLayout.getProjectStorageSubdir(db, did);
           }
         }
-        const result = uploadService.uploadFile(
+        const result = await uploadService.uploadFile(
           storagePath,
           baseUrl,
           log,

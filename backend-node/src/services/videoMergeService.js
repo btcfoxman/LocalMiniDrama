@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 const storageLayout = require('./storageLayout');
+const uploadService = require('./uploadService');
 
 function list(db, query) {
   let sql = 'FROM video_merges WHERE deleted_at IS NULL';
@@ -274,7 +275,12 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
   }
 
-  const finalMergedUrl = mergedRelativePath || mergedUrlFallback;
+  let finalMergedUrl = mergedRelativePath || mergedUrlFallback;
+  if (mergedRelativePath) {
+    finalMergedUrl = await uploadService.uploadLocalPathToStorage(storageRoot, mergedRelativePath, 'video/mp4', log)
+      || uploadService.buildPublicUrl(mergedRelativePath)
+      || mergedRelativePath;
+  }
   db.prepare(
     'UPDATE video_merges SET status = ?, merged_url = ?, duration = ?, completed_at = ?, error_msg = ? WHERE id = ?'
   ).run('completed', finalMergedUrl, Math.round(totalDuration) || null, now, null, mergeId);

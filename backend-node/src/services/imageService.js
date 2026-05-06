@@ -120,9 +120,8 @@ async function splitQuadGridToImages(db, log, originalRow, absLocalPath, storage
           .toBuffer();
         fs.writeFileSync(absPanelPath, panelBuf);
         // 推导远端 URL（与原图同目录，只替换文件名）
-        const panelImageUrl = imageUrl_
-          ? imageUrl_.replace(/[^/\\]+$/, panelFilename)
-          : null;
+        const panelImageUrl = await uploadService.uploadLocalPathToStorage(storagePath, relPanelPath, 'image/jpeg', log)
+          || (imageUrl_ ? imageUrl_.replace(/[^/\\]+$/, panelFilename) : null);
         // 插入 image_generation 记录（status=completed，直接可用）
         db.prepare(
           `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, character_id, provider, prompt, model, frame_type, image_url, local_path, status, created_at, updated_at, completed_at)
@@ -337,7 +336,8 @@ async function splitNineGridToImages(db, log, originalRow, absLocalPath, storage
           .jpeg({ quality: 92 })
           .toBuffer();
         fs.writeFileSync(absPanelPath, panelBuf);
-        const panelImageUrl = imageUrl_ ? imageUrl_.replace(/[^/\\]+$/, panelFilename) : null;
+        const panelImageUrl = await uploadService.uploadLocalPathToStorage(storagePath, relPanelPath, 'image/jpeg', log)
+          || (imageUrl_ ? imageUrl_.replace(/[^/\\]+$/, panelFilename) : null);
         db.prepare(
           `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, model, frame_type, image_url, local_path, status, created_at, updated_at, completed_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
@@ -1256,6 +1256,7 @@ async function processImageGeneration(db, log, imageGenId) {
       if (localPath && imageSize) {
         const absImg = path.join(storagePath, localPath);
         await normalizeLocalImageToTargetSize(absImg, imageSize, log, { id: imageGenId });
+        await uploadService.uploadLocalPathToStorage(storagePath, localPath, null, log);
       }
       log.info('[图生] Step5 保存完成', { id: imageGenId, local_path: localPath, save_ms: Date.now() - tSave, elapsed: elapsed() });
     } catch (saveErr) {
@@ -1265,7 +1266,7 @@ async function processImageGeneration(db, log, imageGenId) {
     // 入库的 image_url：优先指向本地静态路径，避免前端仍用 Gemini 返回的 data URL（未经过尺寸对齐的 buffer）
     let persistedImageUrl = result.image_url;
     if (localPath) {
-      persistedImageUrl = '/static/' + String(localPath).replace(/^\//, '');
+      persistedImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '');
     }
 
     // ── Step 6: 写库 & 任务完成 ──────────────────────────────────────

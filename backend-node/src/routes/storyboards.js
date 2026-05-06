@@ -7,6 +7,7 @@ const framePromptService = require('../services/framePromptService');
 const aiClient = require('../services/aiClient');
 const promptI18n = require('../services/promptI18n');
 const angleService = require('../services/angleService');
+const uploadService = require('../services/uploadService');
 const { buildUniversalSegmentUserPromptBundle } = require('../services/universalSegmentPromptBundle');
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
 
@@ -988,10 +989,12 @@ function routes(db, log) {
         const newRelPath = path.join(dirName, baseName + '_2x' + ext).replace(/\\/g, '/');
         const newFile = path.join(storageBase, newRelPath);
         await sharp(srcFile).resize(newW, newH, { kernel: 'lanczos3' }).toFile(newFile);
+        const imageUrl = await uploadService.uploadLocalPathToStorage(storageBase, newRelPath, null, log)
+          || uploadService.buildPublicUrl(newRelPath, cfg.storage?.base_url || '');
         const now = new Date().toISOString();
-        db.prepare('UPDATE storyboards SET local_path = ?, updated_at = ? WHERE id = ?').run(newRelPath, now, id);
+        db.prepare('UPDATE storyboards SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(imageUrl, newRelPath, now, id);
         log.info('storyboard upscale done', { id, newRelPath, newW, newH });
-        response.success(res, { local_path: newRelPath, width: newW, height: newH });
+        response.success(res, { image_url: imageUrl, local_path: newRelPath, width: newW, height: newH });
       } catch (err) {
         log.error('storyboards upscale', { error: err.message });
         response.internalError(res, err.message);

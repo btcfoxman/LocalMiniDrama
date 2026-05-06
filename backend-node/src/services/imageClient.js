@@ -1589,6 +1589,7 @@ function createAndGenerateImage(db, log, opts) {
         return;
       }
       let localPath = null;
+      let finalImageUrl = result.image_url;
       try {
         const loadConfig = require('../config').loadConfig;
         const cfg = loadConfig();
@@ -1605,22 +1606,25 @@ function createAndGenerateImage(db, log, opts) {
           'ig',
           projectSubdir
         );
+        if (localPath) {
+          finalImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '') || result.image_url;
+        }
       } catch (_) {}
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(
           'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-        ).run('completed', result.image_url, localPath, now2, now2, imageGenId);
+        ).run('completed', finalImageUrl, localPath, now2, now2, imageGenId);
       } catch (e) {
         if ((e.message || '').includes('completed_at')) {
           db.prepare(
             'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-          ).run('completed', result.image_url, localPath, now2, imageGenId);
+          ).run('completed', finalImageUrl, localPath, now2, imageGenId);
         } else {
           throw e;
         }
       }
-      taskService.updateTaskResult(db, taskId, { image_generation_id: imageGenId, image_url: result.image_url, local_path: localPath, status: 'completed' });
+      taskService.updateTaskResult(db, taskId, { image_generation_id: imageGenId, image_url: finalImageUrl, local_path: localPath, status: 'completed' });
       if (charIdNum != null) {
         try {
           // 旧图追加到 extra_images，与上传逻辑保持一致
@@ -1634,11 +1638,11 @@ function createAndGenerateImage(db, log, opts) {
           if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
           const extraJson = extras.length ? JSON.stringify(extras) : null;
           seedance2AssetGuards.markStaleOnCharacterMainImageDrift(db, log, { ...oldChar, id: charIdNum }, {
-            image_url: result.image_url,
+            image_url: finalImageUrl,
             local_path: localPath,
           });
           db.prepare('UPDATE characters SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
-            result.image_url,
+            finalImageUrl,
             localPath,
             extraJson,
             now2,
@@ -1646,12 +1650,12 @@ function createAndGenerateImage(db, log, opts) {
           );
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, charIdNum);
+            db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(finalImageUrl, now2, charIdNum);
           } else {
             throw e;
           }
         }
-        log.info('Character image updated', { character_id: charIdNum, image_url: result.image_url, local_path: localPath });
+        log.info('Character image updated', { character_id: charIdNum, image_url: finalImageUrl, local_path: localPath });
       }
       if (sceneIdNum != null) {
         try {
@@ -1664,7 +1668,7 @@ function createAndGenerateImage(db, log, opts) {
           if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
           const extraJson = extras.length ? JSON.stringify(extras) : null;
           db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
-            result.image_url,
+            finalImageUrl,
             localPath,
             extraJson,
             now2,
@@ -1672,12 +1676,12 @@ function createAndGenerateImage(db, log, opts) {
           );
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
+            db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(finalImageUrl, now2, sceneIdNum);
           } else {
             throw e;
           }
         }
-        log.info('Scene image updated', { scene_id: sceneIdNum, image_url: result.image_url, local_path: localPath });
+        log.info('Scene image updated', { scene_id: sceneIdNum, image_url: finalImageUrl, local_path: localPath });
       }
       log.info('Image generation completed', { image_gen_id: imageGenId, local_path: localPath });
     } catch (err) {

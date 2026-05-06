@@ -72,6 +72,7 @@ const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
+const uploadService = require('./uploadService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
 /** @returns {{ dir: string, relPrefix: string }} 与图片 uploads 一致的工程子目录规则 */
@@ -277,6 +278,7 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     if (result.video_url) {
       let localPath = null;
+      let finalVideoUrl = result.video_url;
       try {
         const loadConfig = require('../config').loadConfig;
         const cfg = loadConfig();
@@ -286,29 +288,34 @@ async function processVideoGeneration(db, log, videoGenId) {
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
         localPath = await downloadVideoToLocal(storagePath, result.video_url, videoGenId, log, projectSubdir);
         maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+        if (localPath) {
+          finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
+            || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
+            || result.video_url;
+        }
       } catch (_) {}
       try {
         db.prepare(
           'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-        ).run('completed', result.video_url, localPath, now2, now2, videoGenId);
+        ).run('completed', finalVideoUrl, localPath, now2, now2, videoGenId);
       } catch (e) {
         if ((e.message || '').includes('completed_at')) {
           db.prepare(
             'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-          ).run('completed', result.video_url, localPath, now2, videoGenId);
+          ).run('completed', finalVideoUrl, localPath, now2, videoGenId);
         } else throw e;
       }
       // 自动更新分镜的主视频
       if (row.storyboard_id) {
         try {
           db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-            result.video_url, localPath, now2, row.storyboard_id
+            finalVideoUrl, localPath, now2, row.storyboard_id
           );
-          log.info('Updated storyboard video', { storyboard_id: row.storyboard_id, video_url: result.video_url });
+          log.info('Updated storyboard video', { storyboard_id: row.storyboard_id, video_url: finalVideoUrl });
         } catch (_) {}
       }
-      if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: result.video_url, status: 'completed' });
-      log.info('Video generation completed', { id: videoGenId, video_url: result.video_url, local_path: localPath });
+      if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: finalVideoUrl, status: 'completed' });
+      log.info('Video generation completed', { id: videoGenId, video_url: finalVideoUrl, local_path: localPath });
       return;
     }
     if (result.task_id) {
@@ -321,6 +328,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       const now3 = new Date().toISOString();
       if (pollResult.video_url) {
         let localPath = null;
+        let finalVideoUrl = pollResult.video_url;
         try {
           const loadConfig = require('../config').loadConfig;
           const cfg = loadConfig();
@@ -330,28 +338,33 @@ async function processVideoGeneration(db, log, videoGenId) {
           const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
           localPath = await downloadVideoToLocal(storagePath, pollResult.video_url, videoGenId, log, projectSubdir);
           maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+          if (localPath) {
+            finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
+              || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
+              || pollResult.video_url;
+          }
         } catch (_) {}
         try {
           db.prepare(
             'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-          ).run('completed', pollResult.video_url, localPath, now3, now3, videoGenId);
+          ).run('completed', finalVideoUrl, localPath, now3, now3, videoGenId);
         } catch (e) {
           if ((e.message || '').includes('completed_at')) {
             db.prepare(
               'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-            ).run('completed', pollResult.video_url, localPath, now3, videoGenId);
+            ).run('completed', finalVideoUrl, localPath, now3, videoGenId);
           } else throw e;
         }
         // 自动更新分镜的主视频
         if (row.storyboard_id) {
           try {
             db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-              pollResult.video_url, localPath, now3, row.storyboard_id
+              finalVideoUrl, localPath, now3, row.storyboard_id
             );
-            log.info('Updated storyboard video (poll)', { storyboard_id: row.storyboard_id, video_url: pollResult.video_url });
+            log.info('Updated storyboard video (poll)', { storyboard_id: row.storyboard_id, video_url: finalVideoUrl });
           } catch (_) {}
         }
-        if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: pollResult.video_url, status: 'completed' });
+        if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: finalVideoUrl, status: 'completed' });
         log.info('Video generation completed (after poll)', { id: videoGenId, local_path: localPath });
       } else {
         setVideoGenFailed(db, videoGenId, pollResult.error || '超时或失败', now3);
