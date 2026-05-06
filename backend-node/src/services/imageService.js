@@ -1021,7 +1021,7 @@ async function processImageGeneration(db, log, imageGenId) {
         cfg = mergeCfgStyleWithDrama(cfg, dr || {});
       } catch (_) {}
     }
-    const filesBaseUrl = (cfg.storage && cfg.storage.base_url) ? String(cfg.storage.base_url).replace(/\/$/, '') : '';
+    const filesBaseUrl = (cfg.storage && (cfg.storage.public_base_url || cfg.storage.base_url)) ? String(cfg.storage.public_base_url || cfg.storage.base_url).replace(/\/$/, '') : '';
     const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');

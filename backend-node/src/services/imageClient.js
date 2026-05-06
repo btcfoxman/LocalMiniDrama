@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const uploadService = require('./uploadService');
+const objectStorage = require('./objectStorageService');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
@@ -792,6 +793,190 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
 
 // 通义万象：支持参考图（角色/场景），content 为 [text, image, image, ...]；本地调试时参考图可转 base64
 // 通义千问 qwen-image：仅支持 content 中一个 text，用同步接口，parameters 不含 stream/enable_interleave
+function parseConfigSettings(config) {
+  const raw = config?.settings;
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function isDataImageUrl(value) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(value || '').trim());
+}
+
+function isPrivateHostname(hostname) {
+  const h = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  if (/^(fc|fd)[0-9a-f]{2}:/i.test(h) || /^fe80:/i.test(h)) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254)) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function isExternallyReachableHttpUrl(value) {
+  const raw = String(value || '').trim();
+  if (!isHttpUrl(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    return !isPrivateHostname(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function mimeFromPathLike(value) {
+  const ext = path.extname(String(value || '').split('?')[0]).toLowerCase();
+  return {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.gif': 'image/gif',
+  }[ext] || 'image/png';
+}
+
+function extFromMime(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('jpeg') || mime.includes('jpg')) return '.jpg';
+  if (mime.includes('webp')) return '.webp';
+  if (mime.includes('bmp')) return '.bmp';
+  if (mime.includes('gif')) return '.gif';
+  return '.png';
+}
+
+function configuredStorageLocalPath(storageLocalPath) {
+  if (storageLocalPath) return storageLocalPath;
+  const storage = getAppConfig()?.storage || {};
+  const raw = storage.local_path || './data/storage';
+  return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
+}
+
+function stripKnownBaseUrl(rawUrl, baseUrl) {
+  const raw = String(rawUrl || '').trim();
+  const base = String(baseUrl || '').trim().replace(/\/$/, '');
+  if (!raw || !base) return null;
+  if (raw === base) return '';
+  if (raw.startsWith(base + '/')) {
+    return objectStorage.normalizeKey(decodeURIComponent(raw.slice(base.length + 1)));
+  }
+  return null;
+}
+
+function relativePathFromImageRef(value, filesBaseUrl, storage) {
+  const raw = String(value || '').trim();
+  if (!raw || isDataImageUrl(raw)) return null;
+  if (!isHttpUrl(raw)) return objectStorage.normalizeKey(raw);
+
+  const configuredBases = [
+    filesBaseUrl,
+    storage?.public_base_url,
+    storage?.base_url,
+    storage?.endpoint && storage?.bucket ? `${String(storage.endpoint).replace(/\/$/, '')}/${storage.bucket}` : '',
+  ].filter(Boolean);
+  for (const base of configuredBases) {
+    const rel = stripKnownBaseUrl(raw, base);
+    if (rel != null) return rel;
+  }
+
+  const key = objectStorage.keyFromPublicUrl(storage, raw);
+  if (key) return objectStorage.normalizeKey(key);
+
+  try {
+    const parsed = new URL(raw);
+    const afterStatic = parsed.pathname.split('/static/')[1];
+    if (afterStatic) return objectStorage.normalizeKey(decodeURIComponent(afterStatic));
+    if (isPrivateHostname(parsed.hostname)) {
+      const parts = parsed.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      if (storage?.bucket && parts[0] === storage.bucket) return objectStorage.normalizeKey(parts.slice(1).join('/'));
+      return objectStorage.normalizeKey(parts.join('/'));
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function dataImageRefToPublicUrl(value, storagePath, log) {
+  const raw = String(value || '').trim();
+  const m = raw.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (!m) return null;
+  const mimeType = m[1].toLowerCase();
+  let buffer;
+  try {
+    buffer = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+  } catch (_) {
+    return null;
+  }
+  if (!buffer.length) return null;
+  const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 24);
+  const relPath = `references/${hash}${extFromMime(mimeType)}`;
+  try {
+    const url = await uploadService.saveBufferToStorage(storagePath, relPath, buffer, mimeType, log);
+    return isExternallyReachableHttpUrl(url) ? url : null;
+  } catch (e) {
+    log?.warn?.('[image-ref] upload data image to S3 failed', { key: relPath, error: e.message });
+    return null;
+  }
+}
+
+async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalPath, log) {
+  if (!value || !String(value).trim()) return null;
+  const raw = String(value).trim();
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return raw;
+
+  const storage = getAppConfig()?.storage || {};
+  const storagePath = configuredStorageLocalPath(storageLocalPath);
+  const publicBase = storage?.public_base_url || storage?.base_url || filesBaseUrl || '';
+  const canUsePublicS3Url =
+    objectStorage.isS3Storage(storage) &&
+    storage?.bucket &&
+    isExternallyReachableHttpUrl(publicBase);
+
+  if (canUsePublicS3Url) {
+    if (isDataImageUrl(raw)) {
+      const dataUrl = await dataImageRefToPublicUrl(raw, storagePath, log);
+      if (dataUrl) return dataUrl;
+    }
+
+    const relPath = relativePathFromImageRef(raw, filesBaseUrl, storage);
+    if (relPath) {
+      const mimeType = mimeFromPathLike(relPath);
+      let uploadedUrl = null;
+      try {
+        uploadedUrl = await uploadService.uploadLocalPathToStorage(storagePath, relPath, mimeType, log);
+      } catch (e) {
+        log?.warn?.('[image-ref] upload local reference to S3 failed', { key: relPath, error: e.message });
+      }
+      const publicUrl = uploadedUrl || objectStorage.publicUrlForKey(storage, relPath);
+      if (isExternallyReachableHttpUrl(publicUrl)) {
+        log?.info?.('[image-ref] reference resolved as public S3 URL', {
+          key: relPath,
+          uploaded: !!uploadedUrl,
+          url: publicUrl,
+        });
+        return publicUrl;
+      }
+    }
+  }
+
+  return resolveImageRef(raw, filesBaseUrl, storageLocalPath);
+}
+
 async function callDashScopeImageApi(config, log, opts) {
   const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, negative_prompt } = opts;
   const base = (config.base_url || '').replace(/\/$/, '');
@@ -1407,7 +1592,11 @@ async function callImageApi(db, log, opts) {
   const isSeedream = isVolc || /seedream|doubao/i.test(model);
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = [];
+  for (const r of rawRefs) {
+    const resolved = await resolveImageRefForOpenAICompat(r, files_base_url, storage_local_path, log);
+    if (resolved) resolvedRefs.push(resolved);
+  }
   if (resolvedRefs.length > 0) {
     log.info('Image API request with reference images', {
       url: url.slice(0, 60), model, image_gen_id,
@@ -1418,6 +1607,8 @@ async function callImageApi(db, log, opts) {
 
   // doubao-seedream-4-5+ 要求最低 3686400 像素，不足时等比放大
   const effectiveSize = (isSeedream && size) ? fixSeedreamSize(size) : size;
+  const configSettings = parseConfigSettings(config);
+  const effectiveQuality = quality || configSettings.quality;
 
   const body = {
     model,
@@ -1425,7 +1616,10 @@ async function callImageApi(db, log, opts) {
     // doubao-seedream API 不使用 n，其他 OpenAI 兼容接口保留
     ...(!isSeedream ? { n: 1 } : {}),
     ...(effectiveSize ? { size: effectiveSize } : {}),
-    ...(quality ? { quality } : {}),
+    ...(effectiveQuality ? { quality: effectiveQuality } : {}),
+    ...(!isSeedream && configSettings.style ? { style: String(configSettings.style) } : {}),
+    ...(!isSeedream && configSettings.response_format ? { response_format: String(configSettings.response_format) } : {}),
+    ...(!isSeedream && configSettings.user != null ? { user: String(configSettings.user) } : {}),
     // volcengine 原生或 doubao-seedream 模型均需关闭水印（默认为 true）
     ...((isVolc || isSeedream) ? { watermark: false } : {}),
     // 多张参考图时加 negative_prompt，防止模型把参考图拼成左右分割的合图
@@ -1434,7 +1628,16 @@ async function callImageApi(db, log, opts) {
     // 参考图字段：volcengine doubao-seedream API 规范使用 image（数组），见官方文档
     ...(resolvedRefs.length > 0 ? { image: resolvedRefs } : {}),
   };
-  log.info('Image API request', { url: url.slice(0, 60), model, image_gen_id, has_ref_images: resolvedRefs.length > 0, size: effectiveSize, original_size: size !== effectiveSize ? size : undefined });
+  log.info('Image API request', {
+    url: url.slice(0, 60),
+    model,
+    image_gen_id,
+    has_ref_images: resolvedRefs.length > 0,
+    ref_types: resolvedRefs.map((r) => (r.startsWith('data:') ? 'base64' : 'url')),
+    body_keys: Object.keys(body),
+    size: effectiveSize,
+    original_size: size !== effectiveSize ? size : undefined,
+  });
   const openaiCompatHeaders = {
     'Content-Type': 'application/json',
     Authorization: 'Bearer ' + (config.api_key || ''),
