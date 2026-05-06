@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log*
+data/
+logs/
+deploy-pack/
+configs/config.yaml
+configs/ai-configs-*.json
+*.db
+*.db-shm
+*.db-wal
+.env
