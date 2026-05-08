@@ -840,6 +840,16 @@ function isExternallyReachableHttpUrl(value) {
   }
 }
 
+function normalizeExternalHttpUrl(value) {
+  const raw = String(value || '').trim();
+  if (!isHttpUrl(raw)) return raw;
+  try {
+    return new URL(raw).href;
+  } catch (_) {
+    return raw;
+  }
+}
+
 function mimeFromPathLike(value) {
   const ext = path.extname(String(value || '').split('?')[0]).toLowerCase();
   return {
@@ -927,7 +937,7 @@ async function dataImageRefToPublicUrl(value, storagePath, log) {
   const relPath = `references/${hash}${extFromMime(mimeType)}`;
   try {
     const url = await uploadService.saveBufferToStorage(storagePath, relPath, buffer, mimeType, log);
-    return isExternallyReachableHttpUrl(url) ? url : null;
+    return isExternallyReachableHttpUrl(url) ? normalizeExternalHttpUrl(url) : null;
   } catch (e) {
     log?.warn?.('[image-ref] upload data image to S3 failed', { key: relPath, error: e.message });
     return null;
@@ -937,7 +947,7 @@ async function dataImageRefToPublicUrl(value, storagePath, log) {
 async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalPath, log) {
   if (!value || !String(value).trim()) return null;
   const raw = String(value).trim();
-  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return raw;
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
   const storage = getAppConfig()?.storage || {};
   const storagePath = configuredStorageLocalPath(storageLocalPath);
@@ -964,12 +974,13 @@ async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalP
       }
       const publicUrl = uploadedUrl || objectStorage.publicUrlForKey(storage, relPath);
       if (isExternallyReachableHttpUrl(publicUrl)) {
+        const normalizedPublicUrl = normalizeExternalHttpUrl(publicUrl);
         log?.info?.('[image-ref] reference resolved as public S3 URL', {
           key: relPath,
           uploaded: !!uploadedUrl,
-          url: publicUrl,
+          url: normalizedPublicUrl,
         });
-        return publicUrl;
+        return normalizedPublicUrl;
       }
     }
   }
