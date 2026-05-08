@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
-const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
+const uploadService = require('./uploadService');
+const { uploadLocalImageToProxy, uploadToImageProxy } = uploadService;
 const {
   signKlingOfficialJwt,
   normalizeKlingCredential,
@@ -86,6 +87,113 @@ function parseConfigSettingsJson(config) {
 }
 
 /** SecretKey 是否按 Base64 解码后再参与 HS256（部分控制台给出的 Secret 为 Base64 串） */
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function isPrivateHostname(hostname) {
+  const h = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.endsWith('.local') || h.endsWith('.localdomain') || h.endsWith('.internal')) return true;
+  if (!h.includes('.') && !h.includes(':')) return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  if (/^(fc|fd)[0-9a-f]{2}:/i.test(h) || /^fe80:/i.test(h)) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if ([a, b, Number(m[3]), Number(m[4])].some((n) => n > 255)) return true;
+  if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254)) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
+function isExternallyReachableHttpUrl(value) {
+  const raw = String(value || '').trim();
+  if (!isHttpUrl(raw)) return false;
+  try {
+    return !isPrivateHostname(new URL(raw).hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeExternalHttpUrl(value) {
+  const raw = String(value || '').trim();
+  if (!isHttpUrl(raw)) return raw;
+  try {
+    return new URL(raw).href;
+  } catch (_) {
+    return raw;
+  }
+}
+
+function videoMimeFromPathLike(value) {
+  const ext = path.extname(String(value || '').split('?')[0]).toLowerCase();
+  return {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.gif': 'image/gif',
+  }[ext] || 'image/png';
+}
+
+function relPathFromVideoImageRef(rawUrl, filesBaseUrl) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw || raw.startsWith('data:') || raw.startsWith('asset://')) return '';
+  if (isHttpUrl(raw)) {
+    const rel = storageRelativeFromPublicUrl(raw);
+    if (rel) {
+      const base = String(filesBaseUrl || '').trim().replace(/\/$/, '');
+      if (base) {
+        const baseRel = storageRelativeFromPublicUrl(base + '/');
+        if (baseRel && rel.startsWith(baseRel + '/')) {
+          return normalizeStorageRelativePath(rel.slice(baseRel.length + 1));
+        }
+      }
+      return rel;
+    }
+    return '';
+  }
+  return normalizeStorageRelativePath(decodeUriPathForSd2Match(raw.replace(/^\/+/, '')));
+}
+
+async function resolveVideoImageToPublicStorageUrl(rawUrl, filesBaseUrl, storageLocalPath, log, videoGenId, index, tag) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw || raw.startsWith('data:') || raw.startsWith('asset://')) return null;
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
+  if (!storageLocalPath) return null;
+
+  const relPath = relPathFromVideoImageRef(raw, filesBaseUrl);
+  if (!relPath) return null;
+
+  let uploadedUrl = null;
+  try {
+    uploadedUrl = await uploadService.uploadLocalPathToStorage(storageLocalPath, relPath, videoMimeFromPathLike(relPath), log);
+  } catch (e) {
+    log?.warn?.('[video-ref] upload local image to S3 failed', { video_gen_id: videoGenId, index, key: relPath, error: e.message });
+  }
+
+  const publicUrl = uploadedUrl || uploadService.buildPublicUrl(relPath, filesBaseUrl || '');
+  if (!isExternallyReachableHttpUrl(publicUrl)) return null;
+
+  const normalized = normalizeExternalHttpUrl(publicUrl);
+  log?.info?.('[video-ref] reference resolved as public S3 URL', {
+    video_gen_id: videoGenId,
+    index,
+    tag,
+    key: relPath,
+    uploaded: !!uploadedUrl,
+    url_head: normalized.slice(0, 140),
+  });
+  return normalized;
+}
+
 function resolveKlingSecretKeyBase64Flag(cfg) {
   const s = parseConfigSettingsJson(cfg);
   if (s.kling_secret_key_base64 === true || s.kling_secret_key_base64 === 1) return true;
@@ -286,10 +394,9 @@ function resolveImageInputForOmniLocalBase64(rawUrl, files_base_url, storage_loc
   const raw = (rawUrl || '').trim();
   if (!raw) return null;
   if (raw.startsWith('data:')) return raw;
-  if (/localhost|127\.0\.0\.1/i.test(raw) && storage_local_path) {
-    const baseUrl = (files_base_url || '').replace(/\/$/, '');
-    const afterStatic = raw.split('/static/')[1] || (baseUrl ? raw.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
-    const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
+  if (storage_local_path) {
+    const relPath = relPathFromVideoImageRef(raw, files_base_url);
     if (relPath) {
       const filePath = path.join(storage_local_path, relPath);
       try {
@@ -317,8 +424,18 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
   if (raw.startsWith('data:')) return raw;
   if (raw.startsWith('asset://')) return raw;
 
-  const isPublicHttp = /^https?:\/\//i.test(raw) && !/localhost|127\.0\.0\.1/i.test(raw);
-  if (isPublicHttp) return raw;
+  const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
+    raw,
+    files_base_url,
+    storage_local_path,
+    log,
+    video_gen_id,
+    index,
+    'kling_omni'
+  );
+  if (publicStorageUrl) return publicStorageUrl;
+
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
   if (storage_local_path) {
     const tag = `kling_omni_vg${video_gen_id}_${index}`;
@@ -342,8 +459,18 @@ async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_p
   if (raw.startsWith('data:')) return raw;
   if (raw.startsWith('asset://')) return raw;
 
-  const isPublicHttp = /^https?:\/\//i.test(raw) && !/localhost|127\.0\.0\.1/i.test(raw);
-  if (isPublicHttp) return raw;
+  const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
+    raw,
+    files_base_url,
+    storage_local_path,
+    log,
+    video_gen_id,
+    index,
+    'volc_omni'
+  );
+  if (publicStorageUrl) return publicStorageUrl;
+
+  if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
   if (storage_local_path) {
     const tag = `volc_omni_vg${video_gen_id}_${index}`;
@@ -477,6 +604,14 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     ratio,
     duration: effectiveDuration,
     image_count: urls.length,
+    image_url_types: body.content
+      .filter((p) => p.type === 'image_url')
+      .map((p) => String(p.image_url?.url || '').startsWith('data:')
+        ? 'data_url'
+        : (String(p.image_url?.url || '').startsWith('asset://') ? 'asset' : 'http_url')),
+    image_url_heads: body.content
+      .filter((p) => p.type === 'image_url')
+      .map((p) => String(p.image_url?.url || '').startsWith('data:') ? '(base64)' : String(p.image_url?.url || '').slice(0, 140)),
     asset_ref_count: volcOmniAssetRefCount,
     video_gen_id,
     prompt_head: ((prompt || '').trim()).slice(0, 120),

@@ -205,7 +205,8 @@ async function processVideoGeneration(db, log, videoGenId) {
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
     const loadConfig = require('../config').loadConfig;
     const cfg = loadConfig();
-    const filesBaseUrl = (cfg.storage && cfg.storage.base_url) ? String(cfg.storage.base_url).replace(/\/$/, '') : '';
+    const storagePublicBase = cfg.storage?.public_base_url || cfg.storage?.base_url;
+    const filesBaseUrl = storagePublicBase ? String(storagePublicBase).replace(/\/$/, '') : '';
     const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
