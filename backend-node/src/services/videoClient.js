@@ -931,9 +931,11 @@ function isPlausibleHttpVideoUrl(s) {
 }
 
 /** 单层对象上的视频地址：兼容中转站使用 result_url 而非 video_url */
-function videoUrlFromRecord(rec) {
+function videoUrlFromRecord(rec, opts = {}) {
   if (!rec || typeof rec !== 'object') return null;
-  for (const k of ['video_url', 'result_url', 'url', 'output_url']) {
+  const keys = ['video_url', 'download_url', 'play_url', 'output_url', 'url'];
+  if (opts.includeResultUrl !== false) keys.push('result_url');
+  for (const k of keys) {
     const v = rec[k];
     if (typeof v !== 'string' || !v.trim()) continue;
     const t = v.trim();
@@ -986,7 +988,7 @@ function pickVideoUrlFromItemList(list) {
  */
 function pickVideoUrlFromResultShape(obj) {
   if (!obj || typeof obj !== 'object') return null;
-  let x = videoUrlFromRecord(obj);
+  let x = videoUrlFromRecord(obj, { includeResultUrl: false });
   if (x) return typeof x === 'string' ? x.trim() : x;
   const inner = obj.content;
   if (inner && typeof inner === 'object') {
@@ -999,6 +1001,8 @@ function pickVideoUrlFromResultShape(obj) {
       if (v && typeof v === 'string') return v.trim();
     }
   }
+  x = videoUrlFromRecord(obj);
+  if (x) return typeof x === 'string' ? x.trim() : x;
   return null;
 }
 
@@ -1013,13 +1017,18 @@ function pickProxyVideoUrl(data) {
     const vu = videoUrlFromArkVideoNode(data.video) || data.video.url || data.video.video_url;
     if (vu && typeof vu === 'string') return vu.trim();
   }
-  let u = videoUrlFromRecord(data);
+  let u = videoUrlFromRecord(data, { includeResultUrl: false });
   if (u) return u;
   const d = data.data;
   if (d && typeof d === 'object' && !Array.isArray(d)) {
     const nestedList = pickVideoUrlFromItemList(d.item_list);
     if (nestedList) return nestedList;
-    u = videoUrlFromRecord(d);
+    const innerData = d.data;
+    if (innerData && typeof innerData === 'object' && !Array.isArray(innerData)) {
+      const nestedDirect = pickVideoUrlFromResultShape(innerData);
+      if (nestedDirect) return nestedDirect;
+    }
+    u = videoUrlFromRecord(d, { includeResultUrl: false });
     if (u) return u;
     if (d.video && typeof d.video === 'object') {
       const dv = videoUrlFromArkVideoNode(d.video) || d.video.url || d.video.video_url;
@@ -1029,6 +1038,8 @@ function pickProxyVideoUrl(data) {
       const dr = pickVideoUrlFromResultShape(d.result);
       if (dr) return dr;
     }
+    u = videoUrlFromRecord(d);
+    if (u) return u;
   }
   const r = data.result;
   if (r && typeof r === 'object') {
@@ -1059,6 +1070,8 @@ function pickProxyVideoUrl(data) {
     u = videoUrlFromRecord(d[0]);
     if (u) return u;
   }
+  u = videoUrlFromRecord(data);
+  if (u) return u;
   return null;
 }
 

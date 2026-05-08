@@ -210,6 +210,9 @@ function normalizeItem(item) {
 
 function itemUrl(item) {
   if (!item) return ''
+  if (item.type === 'video' && (item.video_url || item.url)) {
+    return item.video_url || item.url
+  }
   const lp = item.local_path || item.image_local_path || item.video_local_path
   if (lp) return '/static/' + lp.replace(/^\//, '')
   return item.url || item.image_url || item.video_url || ''

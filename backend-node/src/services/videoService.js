@@ -85,6 +85,19 @@ function resolveVideosDir(storagePath, projectSubdir) {
   return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
 }
 
+function downloadedVideoLooksInvalid(buffer, contentType) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return 'empty response';
+  const ct = String(contentType || '').toLowerCase();
+  const head = buffer.slice(0, 512).toString('utf8').trimStart().toLowerCase();
+  if (ct.includes('text/html') || head.startsWith('<!doctype') || head.startsWith('<html')) {
+    return 'response is HTML';
+  }
+  if (ct.includes('application/json') || head.startsWith('{')) {
+    return 'response is JSON';
+  }
+  return '';
+}
+
 /**
  * 将远程 video_url 下载到本地
  * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
@@ -97,12 +110,29 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
     const filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, { method: 'GET' });
+    const res = await fetch(videoUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; LocalMiniDrama/1.0)',
+        Accept: 'video/mp4,video/*,*/*',
+      },
+    });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
       return null;
     }
     const buf = Buffer.from(await res.arrayBuffer());
+    const invalidReason = downloadedVideoLooksInvalid(buf, res.headers.get('content-type'));
+    if (invalidReason) {
+      log.warn('Download video returned non-video content', {
+        videoGenId,
+        reason: invalidReason,
+        content_type: res.headers.get('content-type') || '',
+        bytes: buf.length,
+        url_head: videoUrl.slice(0, 160),
+      });
+      return null;
+    }
     fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });

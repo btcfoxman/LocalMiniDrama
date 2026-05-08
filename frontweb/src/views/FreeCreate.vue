@@ -298,7 +298,7 @@ async function pollVideoTask(taskId, item, maxMs = 300000) {
         const vgId = r.video_generation_id
         if (vgId) {
           const vRes = await videosAPI.get(vgId)
-          item.url = vRes?.local_path ? '/static/' + vRes.local_path : vRes?.video_url
+          item.url = vRes?.video_url || (vRes?.local_path ? '/static/' + vRes.local_path : '')
         }
         item.status = 'completed'
         return

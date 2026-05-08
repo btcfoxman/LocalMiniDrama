@@ -2932,12 +2932,12 @@ function openImagePreview(url) {
 function closeImagePreview() {
   previewImageUrl.value = null
 }
-/** 视频地址：优先 local_path（/static/），否则 video_url */
+/** 视频地址：优先后端保存的公网 video_url，local_path 只作为兜底 */
 function assetVideoUrl(item) {
   if (!item) return ''
+  if (item.video_url) return imageUrl(item.video_url)
   const localPath = item.local_path && String(item.local_path).trim()
   if (localPath) return '/static/' + localPath.replace(/^\//, '')
-  if (item.video_url) return imageUrl(item.video_url)
   return ''
 }
 /** 列表项是否具备可播放地址（避免仅有空白 local_path 时外层有卡片、内层无 <video>） */
@@ -5143,9 +5143,10 @@ async function startBatchVideoGeneration() {
           // 连贯帧：提取上一条视频末帧作为参考（全能模式不走连贯帧替换）
           let contiguityFirstFrameUrl = absoluteUrl
           if (contiguity && prevVideoItem && !universal) {
-            const prevVideoUrl = prevVideoItem.local_path
-              ? toAbsoluteImageUrl('/static/' + prevVideoItem.local_path.replace(/^\//, ''))
-              : prevVideoItem.video_url
+            const prevVideoUrl = prevVideoItem.video_url
+              || (prevVideoItem.local_path
+                ? toAbsoluteImageUrl('/static/' + prevVideoItem.local_path.replace(/^\//, ''))
+                : '')
             if (prevVideoUrl) {
               try {
                 const lastFrameBlob = await captureVideoLastFrame(prevVideoUrl)
