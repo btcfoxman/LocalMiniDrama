@@ -1243,7 +1243,7 @@ function isVolcProvider(provider) {
 function isOfficialVolcBaseUrl(baseUrl) {
   try {
     const host = new URL(String(baseUrl || '')).hostname.toLowerCase()
-    return host === 'ark.cn-beijing.volces.com'
+    return host === 'volces.com' || host.endsWith('.volces.com')
   } catch (_) {
     return false
   }
