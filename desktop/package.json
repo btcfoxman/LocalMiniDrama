@@ -37,7 +37,7 @@
   },
   "build": {
     "appId": "com.localminidrama.desktop",
-    "productName": "本地短剧助手",
+    "productName": "出海短剧工厂",
     "artifactName": "LocalMiniDrama ${version}.${ext}",
     "directories": {
       "output": "release"

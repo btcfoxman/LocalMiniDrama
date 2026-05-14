@@ -1,0 +1,91 @@
+name: Build Apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact-name: windows-app
+            artifact-path: desktop/release/*.exe
+            build-command: npx electron-builder --win --publish never
+          - name: macOS
+            os: macos-13
+            artifact-name: macos-app
+            artifact-path: desktop/release/*.dmg
+            build-command: npx electron-builder --mac --config electron-builder-mac.json --publish never
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            frontweb/package-lock.json
+            backend-node/package-lock.json
+            desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frontend dependencies
+        working-directory: frontweb
+        run: npm ci
+
+      - name: Install backend dependencies
+        working-directory: backend-node
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
+        run: npm ci
+
+      - name: Install desktop dependencies and rebuild native modules
+        working-directory: desktop
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontweb
+        run: npm run build
+
+      - name: Copy frontend dist
+        working-directory: desktop
+        run: node scripts/copy-front.js
+
+      - name: Copy backend
+        working-directory: desktop
+        run: node scripts/copy-backend.js
+
+      - name: Build desktop app
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ github.token }}
+        run: ${{ matrix.build-command }}
+
+      - name: Upload app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 14

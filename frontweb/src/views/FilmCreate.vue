@@ -4,8 +4,8 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="goList">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <span class="logo-main">出海短剧工厂</span>
+          <span class="logo-sub">OverseasDrama</span>
         </h1>
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ dramaId ? (store.drama?.title || '项目') : '新建故事' }}</span>
@@ -175,7 +175,7 @@
             <el-option label="生成 6 集" :value="6" />
           </el-select>
           <el-button type="primary" :loading="storyGenerating" @click="onGenerateStory">
-            生成剧本
+            AI生成剧本
           </el-button>
           <el-button plain @click="showNovelImport = true">
             <el-icon><DocumentAdd /></el-icon>
@@ -400,7 +400,7 @@
                       <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
                         加入素材库
                       </el-button>
-                      <span v-if="char.seedance2_asset?.status !== 'active'" class="sd2-cert-btn-wrap">
+                      <span v-if="canUseSd2Assets && char.seedance2_asset?.status !== 'active'" class="sd2-cert-btn-wrap">
                         <el-button
                           size="small"
                           type="warning"
@@ -428,7 +428,7 @@
                         </el-tooltip>
                       </span>
                       <el-button
-                        v-if="char.seedance2_asset?.hub_asset_id && char.seedance2_asset?.status !== 'active'"
+                        v-if="canUseSd2Assets && char.seedance2_asset?.hub_asset_id && char.seedance2_asset?.status !== 'active'"
                         size="small"
                         link
                         type="primary"
@@ -438,7 +438,7 @@
                         刷新认证状态
                       </el-button>
                       <el-button
-                        v-if="char.seedance2_asset?.status === 'active'"
+                        v-if="canUseSd2Assets && char.seedance2_asset?.status === 'active'"
                         size="small"
                         type="success"
                         plain
@@ -2259,7 +2259,7 @@ const videoResolution = storeVideoResolution
 const videoMusic = ref('')
 const videoSfx = ref('')
 const videoQuality = ref('high')
-const videoSubtitle = ref(true)
+const videoSubtitle = ref(false)
 /** 合成整集时把各镜对白 TTS（audio_local_path）按分镜时长对齐并混入成片 */
 const videoBurnDialogue = ref(false)
 const videoWatermark = ref(false)
@@ -2422,7 +2422,10 @@ const navSteps = computed(() => {
 
   // 角色
   const charList = characters.value || []
-  const charDone = charList.length > 0 && charList.every(c => c.image_url)
+  const charDone = charList.length > 0 && charList.every(c => {
+    const hasImage = !!(c.image_url || c.local_path)
+    return hasImage && (!canUseSd2Assets.value || c.seedance2_asset?.status === 'active')
+  })
   const charGen = charactersGenerating.value || generatingCharIds.size > 0
   const charStatus = charGen ? 'generating' : charDone ? 'done' : charList.length > 0 ? 'partial' : 'pending'
 
@@ -2619,13 +2622,36 @@ const videoDuration = ref(null) // 视频总长度
 const storyboardIncludeNarration = ref(false)
 /** 分镜生成是否使用全能模式（universal_segment_text，对接 Seedance / 可灵 Omni）；初始 false，进页后按默认视频配置与项目 metadata 再定 */
 const storyboardUniversalOmni = ref(false)
+const videoAiConfigs = ref([])
 /** 与全能分镜链路一致的视频接口规范（与 AI 配置 · 视频 一致） */
 const OMNI_VIDEO_API_PROTOCOLS = new Set(['kling_omni', 'volcengine_omni'])
 
-function resolveStoryboardUniversalOmniFromMetadataAndVideoDefault(metadata, videoConfigs) {
+function isVolcProvider(provider) {
+  return ['volc', 'volces', 'volcengine'].includes(String(provider || '').toLowerCase())
+}
+
+function isOfficialVolcBaseUrl(baseUrl) {
+  try {
+    const host = new URL(String(baseUrl || '')).hostname.toLowerCase()
+    return host === 'ark.cn-beijing.volces.com'
+  } catch (_) {
+    return false
+  }
+}
+
+function getDefaultVideoConfig(videoConfigs) {
   const arr = Array.isArray(videoConfigs) ? videoConfigs : []
   const videoRows = arr.filter((c) => c && c.service_type === 'video')
-  const def = videoRows.find((c) => c.is_default) || videoRows[0] || null
+  return videoRows.find((c) => c.is_default) || videoRows[0] || null
+}
+
+const canUseSd2Assets = computed(() => {
+  const current = getDefaultVideoConfig(videoAiConfigs.value)
+  return !!(current && isVolcProvider(current.provider) && isOfficialVolcBaseUrl(current.base_url))
+})
+
+function resolveStoryboardUniversalOmniFromMetadataAndVideoDefault(metadata, videoConfigs) {
+  const def = getDefaultVideoConfig(videoConfigs)
   const proto = (def?.api_protocol || '').toString().toLowerCase()
   const omniDefault = OMNI_VIDEO_API_PROTOCOLS.has(proto)
   if (!omniDefault) return false
@@ -2635,6 +2661,7 @@ function resolveStoryboardUniversalOmniFromMetadataAndVideoDefault(metadata, vid
 async function fetchStoryboardUniversalOmniForLoad(metadata) {
   try {
     const list = await aiAPI.list('video')
+    videoAiConfigs.value = Array.isArray(list) ? list : []
     return resolveStoryboardUniversalOmniFromMetadataAndVideoDefault(metadata, list)
   } catch {
     return metadata?.storyboard_universal_omni !== false

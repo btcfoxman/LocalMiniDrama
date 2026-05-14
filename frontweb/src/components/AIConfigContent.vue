@@ -27,6 +27,10 @@
                 <el-icon><MagicStick /></el-icon>
                 一键配置火山
               </el-button>
+              <el-button type="warning" plain @click="openOneKeyAiid">
+                <el-icon><MagicStick /></el-icon>
+                一键配置AIID
+              </el-button>
             </div>
             <div class="actions-right">
               <transition name="fade-slide">
@@ -188,7 +192,7 @@
           </div>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="SD2 资产管理" name="sd2_assets">
+      <el-tab-pane v-if="showSd2AssetsTab" label="SD2 资产管理" name="sd2_assets">
         <div class="tab-content">
           <Sd2AssetManagement :configs="list" />
         </div>
@@ -917,6 +921,33 @@ input_reference = (图片文件，可选)</pre>
       </template>
     </el-dialog>
 
+    <!-- 一键配置 AIID -->
+    <el-dialog
+      v-model="oneKeyAiidVisible"
+      title="一键配置 AIID"
+      width="520px"
+      :close-on-click-modal="false"
+    >
+      <div class="one-key-help">
+        <div class="one-key-section">
+          <div class="one-key-section-title">📋 将自动创建以下配置</div>
+          <ul class="one-key-list">
+            <li><b>文本/对话</b>：OpenAI 文本（gpt-5.4）— 生成故事剧本</li>
+            <li><b>文本生成图片</b>：OpenAI 图片（gpt-image-2）— 角色/场景/道具图</li>
+            <li><b>分镜图片生成</b>：OpenAI 分镜图片（gpt-image-2）— 支持分镜图生成</li>
+            <li><b>视频生成</b>：火山引擎 Omni（Seedance 2.0 Fast）— 生成视频片段</li>
+          </ul>
+        </div>
+        <p class="one-key-note">将按局域网 3.6 当前配置创建 AIID 参数，API Key 留空，后续可在列表中自行补充。</p>
+      </div>
+      <template #footer>
+        <el-button @click="oneKeyAiidVisible = false">取消</el-button>
+        <el-button type="warning" :loading="oneKeyAiidSaving" @click="submitOneKeyAiid">
+          确定，一键创建配置
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 即梦2角色认证：素材列表 -->
     <el-dialog
       v-model="jimeng2AssetsDialogVisible"
@@ -1202,6 +1233,31 @@ const oneKeyTongyiSaving = ref(false)
 const oneKeyVolcVisible = ref(false)
 const oneKeyVolcKey = ref('')
 const oneKeyVolcSaving = ref(false)
+const oneKeyAiidVisible = ref(false)
+const oneKeyAiidSaving = ref(false)
+
+function isVolcProvider(provider) {
+  return ['volc', 'volces', 'volcengine'].includes(String(provider || '').toLowerCase())
+}
+
+function isOfficialVolcBaseUrl(baseUrl) {
+  try {
+    const host = new URL(String(baseUrl || '')).hostname.toLowerCase()
+    return host === 'ark.cn-beijing.volces.com'
+  } catch (_) {
+    return false
+  }
+}
+
+const showSd2AssetsTab = computed(() => {
+  const videoConfigs = (list.value || []).filter((cfg) => cfg?.service_type === 'video')
+  const current = videoConfigs.find((cfg) => cfg.is_default) || videoConfigs[0]
+  return !!(current && isVolcProvider(current.provider) && isOfficialVolcBaseUrl(current.base_url))
+})
+
+watch(showSd2AssetsTab, (visible) => {
+  if (!visible && activeTab.value === 'sd2_assets') activeTab.value = 'configs'
+})
 
 /** 预设厂商与模型（与参考前端一致） */
 const providerConfigs = {
@@ -1530,6 +1586,66 @@ const VOLCENGINE_CONFIGS = [
   { service_type: 'image', name: '火山引擎 即梦 文本生图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-4-5-251128'] },
   { service_type: 'storyboard_image', name: '火山引擎 即梦 分镜图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-4-5-251128'] },
   { service_type: 'video', name: '火山引擎 即梦 视频', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volces', model: ['doubao-seedance-1-5-pro-251215'] }
+]
+
+/** AIID 一键配置用：来自局域网 3.6 当前默认参数，不包含 API Key */
+const AIID_CONFIGS = [
+  {
+    service_type: 'text',
+    name: 'OpenAI 文本',
+    provider: 'openai',
+    api_protocol: 'openai',
+    base_url: 'https://api.aiid.edu.kg/v1',
+    endpoint: '/chat/completions',
+    model: ['gpt-5.4', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo'],
+    default_model: 'gpt-5.4',
+    priority: 0,
+    is_default: true,
+  },
+  {
+    service_type: 'image',
+    name: 'OpenAI 文本生成图片',
+    provider: 'openai',
+    api_protocol: 'openai',
+    base_url: 'https://api.aiid.edu.kg/v1',
+    endpoint: '/images/generations',
+    model: ['gpt-image-2', 'dall-e-3', 'dall-e-2'],
+    default_model: 'gpt-image-2',
+    priority: 0,
+    is_default: true,
+  },
+  {
+    service_type: 'storyboard_image',
+    name: 'OpenAI 分镜图片生成',
+    provider: 'openai',
+    api_protocol: 'openai',
+    base_url: 'https://api.aiid.edu.kg/v1',
+    model: ['gpt-image-2', 'nano-banana-2-2k', 'dall-e-3', 'dall-e-2'],
+    default_model: 'gpt-image-2',
+    priority: 0,
+    is_default: true,
+  },
+  {
+    service_type: 'video',
+    name: '火山引擎 视频',
+    provider: 'volces',
+    api_protocol: 'volcengine_omni',
+    base_url: 'https://api.aiid.edu.kg/api/v3',
+    endpoint: '/contents/generations/tasks',
+    query_endpoint: '/contents/generations/tasks/{taskId}',
+    model: [
+      'doubao-seedance-2-0-260128',
+      'doubao-seedance-2-0-fast-260128',
+      'doubao-seedance-1-5-pro-251215',
+      'doubao-seedance-1-0-lite-i2v-250428',
+      'doubao-seedance-1-0-lite-t2v-250428',
+      'doubao-seedance-1-0-pro-250528',
+      'doubao-seedance-1-0-pro-fast-251015',
+    ],
+    default_model: 'doubao-seedance-2-0-fast-260128',
+    priority: 0,
+    is_default: true,
+  },
 ]
 
 function serviceTypeLabel(t) {
@@ -1902,6 +2018,41 @@ async function submitOneKeyVolc() {
     // 错误已由 request 统一提示
   } finally {
     oneKeyVolcSaving.value = false
+  }
+}
+
+function openOneKeyAiid() {
+  oneKeyAiidVisible.value = true
+}
+
+async function submitOneKeyAiid() {
+  oneKeyAiidSaving.value = true
+  try {
+    for (const cfg of AIID_CONFIGS) {
+      const models = cfg.model || []
+      await aiAPI.create({
+        service_type: cfg.service_type,
+        name: cfg.name,
+        provider: cfg.provider,
+        api_protocol: cfg.api_protocol || null,
+        base_url: cfg.base_url,
+        api_key: '',
+        endpoint: cfg.endpoint || null,
+        query_endpoint: cfg.query_endpoint || null,
+        model: models,
+        default_model: cfg.default_model || models[0] || null,
+        priority: cfg.priority ?? 0,
+        is_default: cfg.is_default !== false,
+        settings: cfg.settings ? JSON.stringify(cfg.settings) : null,
+      })
+    }
+    ElMessage.success('已创建 AIID 文本、图片、分镜图、视频配置（未写入 API Key）')
+    oneKeyAiidVisible.value = false
+    await loadList()
+  } catch (_) {
+    // 错误已由 request 统一提示
+  } finally {
+    oneKeyAiidSaving.value = false
   }
 }
 
