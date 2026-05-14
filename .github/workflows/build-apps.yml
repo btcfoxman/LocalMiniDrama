@@ -3,6 +3,8 @@ name: Build Apps
 on:
   workflow_dispatch:
   push:
+    branches:
+      - test
     tags:
       - 'v*.*.*'
 
@@ -21,7 +23,7 @@ jobs:
             os: windows-latest
             artifact-name: windows-app
             artifact-path: desktop/release/*.exe
-            build-command: npx electron-builder --win --publish never
+            build-command: npx electron-builder --win nsis --publish never
           - name: macOS
             os: macos-13
             artifact-name: macos-app
@@ -79,7 +81,6 @@ jobs:
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          GH_TOKEN: ${{ github.token }}
         run: ${{ matrix.build-command }}
 
       - name: Upload app artifacts
