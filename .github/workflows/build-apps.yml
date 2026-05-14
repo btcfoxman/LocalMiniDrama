@@ -25,7 +25,7 @@ jobs:
             artifact-path: desktop/release/*.exe
             build-command: npx electron-builder --win nsis --publish never
           - name: macOS
-            os: macos-13
+            os: macos-15-intel
             artifact-name: macos-app
             artifact-path: desktop/release/*.dmg
             build-command: npx electron-builder --mac --config electron-builder-mac.json --publish never
