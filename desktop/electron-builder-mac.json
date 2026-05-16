@@ -1,6 +1,6 @@
 {
-  "appId": "com.localminidrama.desktop",
-  "productName": "LocalMiniDrama",
+  "appId": "com.overseasdrama.desktop",
+  "productName": "出海短剧工厂",
   "directories": {
     "output": "release"
   },
@@ -41,6 +41,6 @@
   },
   "dmg": {
     "title": "${productName} ${version}",
-    "artifactName": "${productName}-${version}-mac-${arch}.dmg"
+    "artifactName": "OverseasDrama-${version}-mac-${arch}.dmg"
   }
 }

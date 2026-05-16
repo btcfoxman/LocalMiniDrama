@@ -1,6 +1,6 @@
 {
-  "appId": "com.localminidrama.desktop",
-  "productName": "LocalMiniDrama",
+  "appId": "com.overseasdrama.desktop",
+  "productName": "出海短剧工厂",
   "directories": {
     "output": "release"
   },
@@ -31,11 +31,11 @@
     "target": ["nsis", "portable"],
     "icon": null,
     "signAndEditExecutable": false,
-    "artifactName": "${productName}-Lite-${version}.${ext}"
+    "artifactName": "OverseasDrama-Lite-${version}.${ext}"
   },
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "artifactName": "${productName}-Lite-Setup-${version}.${ext}"
+    "artifactName": "OverseasDrama-Lite-Setup-${version}.${ext}"
   }
 }

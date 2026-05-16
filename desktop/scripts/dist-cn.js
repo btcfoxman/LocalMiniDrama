@@ -36,8 +36,8 @@ if (lite.status !== 0) {
 
 console.log('\n========== 全部构建完成 ==========');
 console.log('输出目录：release/');
-console.log('  完整版安装包：LocalMiniDrama Setup x.x.x.exe');
-console.log('  完整版便携版：LocalMiniDrama x.x.x.exe');
-console.log('  纯净版安装包：LocalMiniDrama-Lite-Setup-x.x.x.exe');
-console.log('  纯净版便携版：LocalMiniDrama-Lite-x.x.x.exe\n');
+console.log('  完整版安装包：OverseasDrama-Setup-x.x.x.exe');
+console.log('  完整版便携版：OverseasDrama-x.x.x.exe');
+console.log('  纯净版安装包：OverseasDrama-Lite-Setup-x.x.x.exe');
+console.log('  纯净版便携版：OverseasDrama-Lite-x.x.x.exe\n');
 process.exit(0);

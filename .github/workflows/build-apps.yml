@@ -21,12 +21,12 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            artifact-name: windows-app
+            artifact-name: OverseasDrama-Windows
             artifact-path: desktop/release/*.exe
             build-command: npx electron-builder --win nsis --publish never
           - name: macOS
             os: macos-15-intel
-            artifact-name: macos-app
+            artifact-name: OverseasDrama-macOS
             artifact-path: desktop/release/*.dmg
             build-command: npx electron-builder --mac --config electron-builder-mac.json --publish never
 

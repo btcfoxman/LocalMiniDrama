@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 // 显式固定 userData 目录，使开发模式与打包 exe 路径完全一致，防止 productName 变更导致路径漂移
-const USERDATA_DIR = path.join(app.getPath('appData'), 'localminidrama-desktop');
+const USERDATA_DIR = path.join(app.getPath('appData'), 'overseasdrama-desktop');
 app.setPath('userData', USERDATA_DIR);
 
 const MAIN_STARTUP_LOG = path.join(USERDATA_DIR, 'main-startup.log');
@@ -25,10 +25,14 @@ process.on('unhandledRejection', (reason) => {
 
 writeMainLog(`main.js loaded packaged=${app.isPackaged} exec=${process.execPath}`);
 
-// 兼容迁移：若旧路径 LocalMiniDrama 有数据而新路径为空，自动迁移
+// 兼容迁移：若旧数据目录有数据而新路径为空，自动迁移
 ;(function migrateOldUserData() {
-  const oldPath = path.join(app.getPath('appData'), 'LocalMiniDrama');
-  if (fs.existsSync(oldPath) && !fs.existsSync(USERDATA_DIR)) {
+  const legacyPaths = [
+    path.join(app.getPath('appData'), 'localminidrama-desktop'),
+    path.join(app.getPath('appData'), 'LocalMiniDrama'),
+  ];
+  const oldPath = legacyPaths.find((legacyPath) => fs.existsSync(legacyPath));
+  if (oldPath && !fs.existsSync(USERDATA_DIR)) {
     try {
       fs.renameSync(oldPath, USERDATA_DIR);
     } catch (e) {
@@ -200,7 +204,7 @@ function createWindow(port) {
   writeMainLog(`createWindow loadURL http://127.0.0.1:${port}`);
   win.loadURL(`http://127.0.0.1:${port}`);
   win.on('closed', () => app.quit());
-  if (process.env.LOCALMINIDRAMA_DEVTOOLS === '1') {
+  if (process.env.OVERSEASDRAMA_DEVTOOLS === '1') {
     win.webContents.openDevTools();
   }
 }

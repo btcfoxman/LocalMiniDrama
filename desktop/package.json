@@ -1,9 +1,9 @@
 {
-  "name": "localminidrama-desktop",
+  "name": "overseasdrama-desktop",
   "version": "1.2.6",
-  "description": "LocalMiniDrama 本地桌面客户端",
+  "description": "OverseasDrama desktop client",
   "main": "main.js",
-  "author": "LocalMiniDrama",
+  "author": "OverseasDrama",
   "license": "MIT",
   "scripts": {
     "prestart": "node scripts/copy-backend.js",
@@ -38,9 +38,9 @@
     "electron-rebuild": "^3.2.9"
   },
   "build": {
-    "appId": "com.localminidrama.desktop",
+    "appId": "com.overseasdrama.desktop",
     "productName": "出海短剧工厂",
-    "artifactName": "LocalMiniDrama ${version}.${ext}",
+    "artifactName": "OverseasDrama-${version}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -78,7 +78,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "OverseasDrama-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "OverseasDrama-${version}.${ext}"
     }
   }
 }
