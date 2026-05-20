@@ -1,10 +1,10 @@
 # 出海短剧工厂 / OverseasDrama 桌面客户端
 
-基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.8**
+基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.9**
 
 ---
 
-## 主要功能（v1.2.8）
+## 主要功能（v1.2.9）
 
 | 模块 | 功能 |
 |------|------|
@@ -96,7 +96,7 @@ npm run dist:cn
 ### 2. 从命令行运行（实时日志）
 
 ```powershell
-& "D:\path\to\release\OverseasDrama-1.2.8.exe"
+& "D:\path\to\release\OverseasDrama-1.2.9.exe"
 ```
 
 日志会直接打印在终端，操作软件时可实时看到所有输出。
@@ -105,7 +105,7 @@ npm run dist:cn
 
 ```powershell
 $env:OVERSEASDRAMA_DEVTOOLS=1
-& "D:\path\to\release\OverseasDrama-1.2.8.exe"
+& "D:\path\to\release\OverseasDrama-1.2.9.exe"
 ```
 
 在 Network 面板查看各 API 请求（如 `POST /api/v1/generation/characters`）是否正常发出和返回。

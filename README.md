@@ -6,7 +6,7 @@
 
 *OverseasDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -239,7 +239,11 @@ LocalMiniDrama/
 
 查看完整更新记录 → **[CHANGELOG](docs/changelog.md)**
 
-**最新版 v1.2.8 亮点：**
+**最新版 v1.2.9 亮点：**
+- 🆕 **图片编辑与打码**：媒体素材库、角色、场景、道具图片支持套圈空白、涂抹擦拭、网状线覆盖、马赛克、裁剪、旋转与缩放导出
+- 🆕 **角色脸部处理**：编辑后的图片可保存为新素材或直接设为角色/场景/道具主图，便于降低真人脸部审核拒绝风险
+
+**v1.2.8 亮点：**
 - 🔧 **公网 S3 签名上传打通**：桌面端 S3 改用 `https://s3-3-6.aiid.edu.kg`，兼容 3.6 Cloudflared 将 `Host` 转发为 `192.168.3.6:9000` 的部署方式
 - 🔧 **已安装用户 S3 配置同步**：新版 exe 启动时会同步内置 `storage` 配置，避免旧安装继续使用局域网 endpoint
 

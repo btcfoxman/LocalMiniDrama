@@ -122,7 +122,25 @@
         <div class="meta-row"><span>大小：</span>{{ formatSize(previewItem?.size) }}</div>
         <div class="meta-row"><span>创建时间：</span>{{ previewItem?.created_at }}</div>
       </div>
+      <template #footer>
+        <el-button @click="showPreview = false">关闭</el-button>
+        <el-button
+          v-if="previewItem?.type === 'image'"
+          type="primary"
+          @click="openMaskEditor(previewItem)"
+        >
+          <el-icon><EditPen /></el-icon>
+          打码编辑
+        </el-button>
+      </template>
     </el-dialog>
+
+    <ImageMaskEditor
+      v-model="showMaskEditor"
+      :src="editingImageUrl"
+      :file-name="editingFileName"
+      @saved="onMaskedImageSaved"
+    />
   </div>
 </template>
 
@@ -131,8 +149,9 @@ import { ref, onMounted, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, Upload, Search, Loading, CircleCheck,
-  ZoomIn, Delete, Files
+  ZoomIn, Delete, Files, EditPen
 } from '@element-plus/icons-vue'
+import ImageMaskEditor from '@/components/ImageMaskEditor.vue'
 import { uploadAPI } from '@/api/upload'
 import request from '@/utils/request'
 
@@ -148,6 +167,10 @@ const total = ref(0)
 const selectedIds = reactive(new Set())
 const showPreview = ref(false)
 const previewItem = ref(null)
+const showMaskEditor = ref(false)
+const editingItem = ref(null)
+const editingImageUrl = ref('')
+const editingFileName = ref('')
 const uploadInput = ref(null)
 let keywordTimer = null
 
@@ -162,7 +185,8 @@ async function onUpload(e) {
   uploadProgress.value = { current: 0, total: files.length }
   for (const file of files) {
     try {
-      await uploadAPI.uploadImage(file)
+      const result = await uploadAPI.uploadImage(file)
+      await createAssetFromUpload(file, result)
       uploadProgress.value.current++
     } catch (err) {
       ElMessage.warning(`${file.name} 上传失败: ${err.message}`)
@@ -190,7 +214,7 @@ async function loadMedia() {
     if (keyword.value) params.keyword = keyword.value
     const res = await request.get('/assets', { params })
     mediaItems.value = (res?.items || []).map(normalizeItem)
-    total.value = res?.total || 0
+    total.value = res?.total || res?.pagination?.total || 0
   } catch (err) {
     mediaItems.value = []
   } finally {
@@ -218,6 +242,23 @@ function itemUrl(item) {
   return item.url || item.image_url || item.video_url || ''
 }
 
+async function createAssetFromUpload(file, result, extra = {}) {
+  const data = result?.data ?? result
+  const localPath = data?.local_path || data?.path || null
+  const url = data?.url || ''
+  await request.post('/assets', {
+    name: extra.name || file.name || data?.filename || '图片素材',
+    type: 'image',
+    category: extra.category || 'upload',
+    url,
+    local_path: localPath,
+    file_size: file.size,
+    mime_type: file.type || 'image/png',
+    width: extra.width ?? null,
+    height: extra.height ?? null,
+  })
+}
+
 function formatSize(size) {
   if (!size) return ''
   if (size > 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB'
@@ -236,6 +277,35 @@ function toggleSelect(item) {
 function openPreview(item) {
   previewItem.value = item
   showPreview.value = true
+}
+
+function openMaskEditor(item) {
+  editingItem.value = item
+  editingImageUrl.value = itemUrl(item)
+  editingFileName.value = item?.name || 'masked-image.png'
+  showMaskEditor.value = true
+}
+
+async function onMaskedImageSaved({ file, width, height }) {
+  uploading.value = true
+  uploadProgress.value = { current: 0, total: 1 }
+  try {
+    const result = await uploadAPI.uploadImage(file)
+    await createAssetFromUpload(file, result, {
+      name: file.name,
+      category: 'masked',
+      width,
+      height,
+    })
+    uploadProgress.value.current = 1
+    ElMessage.success('打码图片已保存为新素材')
+    showPreview.value = false
+    await loadMedia()
+  } catch (err) {
+    ElMessage.error(err.message || '打码图片保存失败')
+  } finally {
+    uploading.value = false
+  }
 }
 
 async function deleteItem(item) {

@@ -9,6 +9,11 @@ function list(db, query) {
     sql += ' AND type = ?';
     params.push(query.type);
   }
+  if (query.keyword) {
+    const kw = `%${String(query.keyword).trim()}%`;
+    sql += ' AND (name LIKE ? OR url LIKE ? OR local_path LIKE ?)';
+    params.push(kw, kw, kw);
+  }
   const countRow = db.prepare('SELECT COUNT(*) as total ' + sql).get(...params);
   const total = countRow.total || 0;
   const page = Math.max(1, parseInt(query.page, 10) || 1);
@@ -27,6 +32,11 @@ function rowToItem(r) {
     category: r.category,
     url: r.url,
     local_path: r.local_path,
+    size: r.file_size,
+    file_size: r.file_size,
+    mime_type: r.mime_type,
+    width: r.width,
+    height: r.height,
     duration: r.duration,
     image_gen_id: r.image_gen_id,
     video_gen_id: r.video_gen_id,

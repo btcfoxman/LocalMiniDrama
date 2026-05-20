@@ -502,6 +502,10 @@
                         <el-icon v-if="uploadingResourceId !== 'char-' + char.id"><Upload /></el-icon>
                         上传
                       </el-button>
+                      <el-button v-if="hasAssetImage(char)" size="small" @click="openResourceImageEditor('character', char)">
+                        <el-icon><EditPen /></el-icon>
+                        编辑
+                      </el-button>
                     </div>
                   </div>
                 </div>
@@ -572,6 +576,10 @@
                       <el-button type="success" size="small" :loading="uploadingResourceId === 'prop-' + prop.id" @click="onUploadResourceClick('prop', prop.id)">
                         <el-icon v-if="uploadingResourceId !== 'prop-' + prop.id"><Upload /></el-icon>
                         上传
+                      </el-button>
+                      <el-button v-if="hasAssetImage(prop)" size="small" @click="openResourceImageEditor('prop', prop)">
+                        <el-icon><EditPen /></el-icon>
+                        编辑
                       </el-button>
                     </div>
                   </div>
@@ -668,6 +676,10 @@
                       <el-button type="success" size="small" :loading="uploadingResourceId === 'scene-' + scene.id" @click="onUploadResourceClick('scene', scene.id)">
                         <el-icon v-if="uploadingResourceId !== 'scene-' + scene.id"><Upload /></el-icon>
                         上传
+                      </el-button>
+                      <el-button v-if="hasAssetImage(scene)" size="small" @click="openResourceImageEditor('scene', scene)">
+                        <el-icon><EditPen /></el-icon>
+                        编辑
                       </el-button>
                     </div>
                   </div>
@@ -2144,6 +2156,13 @@
         <img :src="previewImageUrl" alt="" class="image-preview-img" @click.stop="closeImagePreview" />
       </div>
     </Teleport>
+
+    <ImageMaskEditor
+      v-model="showResourceImageEditor"
+      :src="resourceEditorUrl"
+      :file-name="resourceEditorFileName"
+      @saved="onResourceImageEdited"
+    />
   </div>
 </template>
 
@@ -2152,7 +2171,7 @@ import { ref, computed, onMounted, onBeforeUnmount, reactive, nextTick } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, EditPen } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { useFilmStore } from '@/stores/film'
 import { dramaAPI } from '@/api/drama'
@@ -2173,6 +2192,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
+import ImageMaskEditor from '@/components/ImageMaskEditor.vue'
 import { generationStyleOptions, getStylePromptEn, getStylePromptZh, stylePromptMetadataForSave, backfillDramaStylePromptMetadataIfNeeded } from '@/constants/styleOptions'
 import { useNavigation } from '@/composables/filmCreate/useNavigation'
 import { useCharacters } from '@/composables/filmCreate/useCharacters'
@@ -2928,6 +2948,10 @@ function onSbImageDrop(e, sb) {
 
 const baseUrl = ref('')
 const previewImageUrl = ref(null)
+const showResourceImageEditor = ref(false)
+const resourceEditorTarget = ref(null)
+const resourceEditorUrl = ref('')
+const resourceEditorFileName = ref('')
 function imageUrl(url) {
   if (!url) return ''
   if (url.startsWith('http')) return url
@@ -2958,6 +2982,18 @@ function openImagePreview(url) {
 }
 function closeImagePreview() {
   previewImageUrl.value = null
+}
+function resourceDisplayName(type, item) {
+  if (type === 'character') return item?.name || 'character'
+  if (type === 'prop') return item?.name || 'prop'
+  return item?.location || item?.name || 'scene'
+}
+function openResourceImageEditor(type, item) {
+  if (!item || !hasAssetImage(item)) return
+  resourceEditorTarget.value = { type, id: item.id }
+  resourceEditorUrl.value = assetImageUrl(item)
+  resourceEditorFileName.value = `${resourceDisplayName(type, item)}.png`
+  showResourceImageEditor.value = true
 }
 /** 视频地址：优先后端保存的公网 video_url，local_path 只作为兜底 */
 function assetVideoUrl(item) {
@@ -3935,6 +3971,49 @@ async function doUploadResourceImage(type, id, file) {
     ElMessage.error(e.message || '上传失败')
   } finally {
     uploadingResourceId.value = null
+  }
+}
+
+async function onResourceImageEdited({ file }) {
+  const target = resourceEditorTarget.value
+  if (!target || !file) return
+  await doReplaceResourceImage(target.type, target.id, file)
+}
+
+async function doReplaceResourceImage(type, id, file) {
+  if (!file || !type || id == null) return
+  const key = type === 'character' ? 'char-' : type === 'prop' ? 'prop-' : 'scene-'
+  uploadingResourceId.value = key + id
+  try {
+    const res = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
+    const data = res?.data ?? res
+    const uploadedLocalPath = data?.local_path || data?.path || null
+    const url = data?.url || uploadedLocalPath
+    if (!url) { ElMessage.error('上传未返回地址'); return }
+
+    const current = findResource(type, id)
+    const extras = parseExtraImages(current)
+    const previous = current?.local_path || current?.image_url || ''
+    if (previous && !extras.includes(previous)) extras.unshift(previous)
+    const payload = {
+      image_url: url,
+      local_path: uploadedLocalPath ?? null,
+      extra_images: JSON.stringify(extras),
+    }
+    if (type === 'character') {
+      await characterAPI.putImage(id, payload)
+    } else if (type === 'prop') {
+      await propAPI.update(id, payload)
+    } else if (type === 'scene') {
+      await sceneAPI.update(id, payload)
+    }
+    await loadDrama()
+    ElMessage.success('编辑后的图片已设为主图')
+  } catch (e) {
+    ElMessage.error(e.message || '图片编辑保存失败')
+  } finally {
+    uploadingResourceId.value = null
+    resourceEditorTarget.value = null
   }
 }
 
