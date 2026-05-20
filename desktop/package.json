@@ -5,6 +5,10 @@
   "main": "main.js",
   "author": "OverseasDrama",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/btcfoxman/LocalMiniDrama.git"
+  },
   "scripts": {
     "prestart": "node scripts/copy-backend.js",
     "start": "electron .",
