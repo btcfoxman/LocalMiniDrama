@@ -151,6 +151,27 @@ function normalizeExternalHttpUrl(value) {
   }
 }
 
+function describeImageTransportForLog(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { kind: 'empty' };
+  if (raw.startsWith('data:')) return { kind: 'base64', head: raw.slice(0, 48) };
+  if (raw.startsWith('asset://')) return { kind: 'asset', head: raw.slice(0, 120) };
+  if (!isHttpUrl(raw)) return { kind: 'relative_or_local', head: raw.slice(0, 120) };
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const pathHead = (u.pathname || '').slice(0, 96);
+    const isProxy = host === 'imageproxy.zhongzhuan.chat' || pathHead.includes('/api/proxy/image/');
+    return {
+      kind: isProxy ? 'imageproxy' : (isExternallyReachableHttpUrl(raw) ? 'http_url' : 'private_http_url'),
+      host,
+      head: (u.origin + pathHead).slice(0, 160),
+    };
+  } catch (_) {
+    return { kind: 'http_url', head: raw.slice(0, 120) };
+  }
+}
+
 function videoMimeFromPathLike(value) {
   const ext = path.extname(String(value || '').split('?')[0]).toLowerCase();
   return {
@@ -606,7 +627,9 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     video_gen_id,
   } = opts;
 
-  const url = buildVideoUrl(config, { defaultEndpoint: '/v1/videos/generations' });
+  const url = buildVideoUrl(config, { defaultEndpoint: VOLC_VIDEO_CREATE_PATH });
+  const volcNativeRequest = isVolcNativeVideoConfig(config);
+  const imagePolicy = volcImageReferencePolicy(config);
   const model = getModelFromConfig(config, preferredModel);
   const finalModel = normalizeVolcModel(model);
   const ratio = aspect_ratio || '16:9';
@@ -661,6 +684,30 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
           } catch (_) {}
         }
       }
+      const resolvedTransport = describeImageTransportForLog(u);
+      if (imagePolicy === 'official_asset' && !isVolcOfficialStorageImageRef(u)) {
+        return {
+          error:
+            '火山官方 Seedance 接口需要使用火山/BytePlus 私有素材库引用（asset://、tos:// 或火山存储 URL），当前参考图不是官方素材引用：' +
+            JSON.stringify(resolvedTransport) +
+            '。请先在「SD2 资产管理」或角色「SD2认证」中上传到官方素材库；OverseasAPI 则可直接使用 S3/中转外链。',
+        };
+      }
+      if (imagePolicy === 'external_url' && String(u).startsWith('data:')) {
+        return {
+          error:
+            'OverseasAPI/类火山原生异步接口需要可拉取的图片 URL，当前参考图未能转成中转/S3/公网 URL，已阻止提交 base64。' +
+            '请在「存储设置」确认图片中转已启用且 Token 有效，并点击「测试中转」。',
+        };
+      }
+      if (imagePolicy === 'external_url' && !String(u).startsWith('asset://') && (!isHttpUrl(u) || !isExternallyReachableHttpUrl(u))) {
+        return {
+          error:
+            'OverseasAPI/类火山原生异步接口收到的参考图不是公网 URL：' +
+            JSON.stringify(resolvedTransport) +
+            '。请启用图片中转或 S3 后重试。',
+        };
+      }
       const part = {
         type: 'image_url',
         image_url: { url: u },
@@ -689,6 +736,8 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
       .filter((p) => p.type === 'image_url')
       .map((p) => String(p.image_url?.url || '').startsWith('data:') ? '(base64)' : String(p.image_url?.url || '').slice(0, 140)),
     asset_ref_count: volcOmniAssetRefCount,
+    native_seedance_endpoint: volcNativeRequest,
+    image_reference_policy: imagePolicy,
     video_gen_id,
     prompt_head: ((prompt || '').trim()).slice(0, 120),
   });
@@ -706,13 +755,21 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
 
   if (!res.ok) {
     let errMsg = '火山 Seedance 全能创建失败: ' + res.status;
+    let upstreamMsg = '';
     try {
       const errJson = JSON.parse(raw);
       const msg = errJson.error?.message || errJson.message || errJson.error;
-      if (msg) errMsg += ' - ' + String(msg).slice(0, 300);
+      if (msg) upstreamMsg = String(msg).slice(0, 300);
     } catch (_) {
-      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+      if (raw) upstreamMsg = raw.slice(0, 200);
     }
+    if (res.status === 504 || /504 Gateway|Gateway Time-out|Timeout/i.test(raw)) {
+      errMsg =
+        '火山 Seedance 创建任务超时(504)：上游端口/网关没有及时返回 task_id。' +
+        '请确认视频接口是异步创建接口 /contents/generations/tasks，而不是同步等待成片的 /v1/videos/generations；' +
+        '若已是异步接口，请检查 3.6 Seedance 端口服务或反向代理超时时间。';
+    }
+    if (upstreamMsg) errMsg += ' - ' + upstreamMsg;
     return { error: errMsg };
   }
 
@@ -930,6 +987,104 @@ function getDefaultVideoConfig(db, preferredModel) {
 const VOLC_VIDEO_CREATE_PATH = '/contents/generations/tasks';
 const VOLC_VIDEO_QUERY_PATH = '/contents/generations/tasks';
 
+function isVolcOfficialBaseUrl(baseUrl) {
+  try {
+    const u = new URL(String(baseUrl || ''));
+    const h = u.hostname.toLowerCase();
+    return h === 'volces.com' || h.endsWith('.volces.com');
+  } catch (_) {
+    return /(^|\.)volces\.com(\/|$)/i.test(String(baseUrl || ''));
+  }
+}
+
+function isVolcNativeApiBaseUrl(baseUrl) {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return false;
+  if (isVolcOfficialBaseUrl(raw)) return true;
+  try {
+    const u = new URL(raw);
+    return /\/api\/v3(?:\/|$)/i.test(u.pathname || '');
+  } catch (_) {
+    return /\/api\/v3(?:\/|$)/i.test(raw);
+  }
+}
+
+function isVolcNativeVideoConfig(config) {
+  const endpoint = String(config?.endpoint || '').toLowerCase();
+  const queryEndpoint = String(config?.query_endpoint || '').toLowerCase();
+  return (
+    isVolcNativeApiBaseUrl(config?.base_url) ||
+    endpoint.includes('/contents/generations/tasks') ||
+    queryEndpoint.includes('/contents/generations/tasks')
+  );
+}
+
+function isVolcOfficialVideoConfig(config) {
+  return isVolcOfficialBaseUrl(config?.base_url);
+}
+
+function isVolcOfficialStorageImageRef(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  if (raw.startsWith('asset://') || raw.startsWith('tos://')) return true;
+  if (!isHttpUrl(raw)) return false;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return (
+      host === 'volces.com' ||
+      host.endsWith('.volces.com') ||
+      host === 'byteplusapi.com' ||
+      host.endsWith('.byteplusapi.com') ||
+      host === 'byteplus.com' ||
+      host.endsWith('.byteplus.com')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function volcImageReferencePolicy(config) {
+  if (isVolcOfficialVideoConfig(config)) return 'official_asset';
+  if (isVolcNativeVideoConfig(config)) return 'external_url';
+  return 'compatible';
+}
+
+function normalizeVolcVideoCreateEndpoint(endpoint, forceNative = false, nonNativeFallback = '/v1/videos/generations') {
+  const raw = String(endpoint || '').trim();
+  if (!raw) return forceNative ? VOLC_VIDEO_CREATE_PATH : nonNativeFallback;
+  const ep = raw.startsWith('/') ? raw : '/' + raw;
+  const lower = ep.toLowerCase();
+  if (
+    lower === '/videos/generations' ||
+    lower === '/video/generations' ||
+    lower === '/v1/videos/generations' ||
+    lower === '/v1/video/generations'
+  ) {
+    if (!forceNative) return ep;
+    return VOLC_VIDEO_CREATE_PATH;
+  }
+  return ep;
+}
+
+function normalizeVolcVideoQueryEndpoint(endpoint, forceNative = false, nonNativeFallback = '/v1/videos/generations/async/{taskId}') {
+  const raw = String(endpoint || '').trim();
+  if (!raw) return forceNative ? VOLC_VIDEO_QUERY_PATH + '/{taskId}' : nonNativeFallback;
+  const ep = raw.startsWith('/') ? raw : '/' + raw;
+  const lower = ep.toLowerCase();
+  if (
+    lower === '/tasks/{taskid}/info' ||
+    lower === '/tasks/{task_id}/info' ||
+    lower === '/v1/videos/generations/async/{taskid}' ||
+    lower === '/v1/videos/generations/async/{task_id}' ||
+    lower === '/v1/video/generations/async/{taskid}' ||
+    lower === '/v1/video/generations/async/{task_id}'
+  ) {
+    if (!forceNative) return ep;
+    return VOLC_VIDEO_QUERY_PATH + '/{taskId}';
+  }
+  return ep;
+}
+
 function getVolcVideoBase(config) {
   let base = (config.base_url || '').replace(/\/$/, '');
   base = base.replace(/\/(contents|video)\/.*$/i, '');
@@ -937,13 +1092,21 @@ function getVolcVideoBase(config) {
 }
 
 /**
- * 非官方火山厂商（中转、自托管等）走 OpenAI/即梦类路径；默认 /video/generations 为旧版中转。
- * volcengine_omni 传入 defaultEndpoint: '/v1/videos/generations' 以对齐方舟文档与 302.ai / jimeng-free-api。
+ * Seedance/火山路径分流：
+ * - 火山官方域名、/api/v3 原生网关、或显式 /contents/generations/tasks：豆包原生异步任务接口。
+ * - 其他类火山/OpenAI 兼容站点：保留用户配置的 /v1/videos/generations 等路径。
  */
 function buildVideoUrl(config, options = {}) {
   const p = (config.provider || '').toLowerCase();
+  const proto = resolveVideoProtocol(config);
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
-  if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_CREATE_PATH;
+  const isVolcNative = isVolc || proto === 'volcengine' || proto === 'volcengine_omni';
+  if (isVolcNative) {
+    const forceNative = isVolcNativeVideoConfig(config);
+    const base = forceNative ? getVolcVideoBase(config) : (config.base_url || '').replace(/\/$/, '');
+    const ep = normalizeVolcVideoCreateEndpoint(config.endpoint, forceNative);
+    return base + ep;
+  }
   const base = (config.base_url || '').replace(/\/$/, '');
   const fallbackEp = options.defaultEndpoint != null ? options.defaultEndpoint : '/video/generations';
   let ep = config.endpoint || fallbackEp;
@@ -956,15 +1119,25 @@ function buildQueryUrl(config, taskId) {
   const proto = resolveVideoProtocol(config);
   const isDashScope = proto === 'dashscope' || p === 'dashscope';
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
+  const isVolcNative = isVolc || proto === 'volcengine' || proto === 'volcengine_omni';
   const isSora = proto === 'sora';
-  if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_QUERY_PATH + '/' + encodeURIComponent(taskId);
+  if (isVolcNative) {
+    const forceNative = isVolcNativeVideoConfig(config);
+    const base = forceNative ? getVolcVideoBase(config) : (config.base_url || '').replace(/\/$/, '');
+    const nonNativeQueryFallback = proto === 'volcengine_omni'
+      ? '/v1/videos/generations/async/{taskId}'
+      : '/video/task/{taskId}';
+    let ep = normalizeVolcVideoQueryEndpoint(config.query_endpoint, forceNative, nonNativeQueryFallback);
+    ep = String(ep).replace(/\{taskId\}/gi, encodeURIComponent(taskId)).replace(/\{task_id\}/gi, encodeURIComponent(taskId)).replace(/\{id\}/gi, encodeURIComponent(taskId));
+    if (!ep.startsWith('/')) ep = '/' + ep;
+    return base + ep;
+  }
   const base = (config.base_url || '').replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'veo3') defaultEp = '/v1/video/query?id={taskId}';
   else if (isDashScope) defaultEp = '/api/v1/tasks/{taskId}';
-  else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   ep = String(ep).replace(/\{taskId\}/gi, encodeURIComponent(taskId)).replace(/\{task_id\}/gi, encodeURIComponent(taskId)).replace(/\{id\}/gi, encodeURIComponent(taskId));
@@ -1376,7 +1549,6 @@ async function callDashScopeVideoApi(config, log, opts) {
   const model = modelName || 'wan2.2-kf2v-flash';
   const dur = duration ? Number(duration) : 10;
   const baseUrl = (files_base_url || '').replace(/\/$/, '');
-  const isLocalhost = baseUrl && /localhost|127\.0\.0\.1/i.test(baseUrl);
 
   function toPublicUrl(value) {
     if (!value || !String(value).trim()) return null;
@@ -1387,34 +1559,21 @@ async function callDashScopeVideoApi(config, log, opts) {
   }
 
   /** ?????? base_url ? localhost????????????? base64??? DashScope ? download image failed */
-  function toImageInput(value) {
+  async function toImageInput(value, index = 0) {
     if (!value || !String(value).trim()) return null;
     const s = String(value).trim();
     if (s.startsWith('asset://')) return s;
-    let relPath = null;
-    if (s.startsWith('http://') || s.startsWith('https://')) {
-      if (!isLocalhost || !storage_local_path) return s;
-      const afterStatic = s.split('/static/')[1] || (baseUrl ? s.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
-      if (afterStatic) {
-        relPath = afterStatic.replace(/^\//, '');
-        if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
-      }
-      else return s;
-    } else if (storage_local_path) {
-      relPath = s.replace(/^\//, '');
-      if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
-    }
-    if (!relPath) return toPublicUrl(s);
-    const filePath = path.join(storage_local_path, relPath);
-    try {
-      if (!fs.existsSync(filePath)) return toPublicUrl(s);
-      const buf = fs.readFileSync(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
-      return 'data:' + mime + ';base64,' + buf.toString('base64');
-    } catch (e) {
-      return toPublicUrl(s);
-    }
+    const resolved = await resolveImageInputForOmniAsync(
+      s,
+      files_base_url,
+      storage_local_path,
+      log,
+      video_gen_id,
+      index
+    );
+    if (resolved && resolved !== s) return resolved;
+    if (resolved && (resolved.startsWith('data:') || resolved.startsWith('asset://') || isHttpUrl(resolved))) return resolved;
+    return toPublicUrl(s);
   }
 
   let url;
@@ -1424,8 +1583,8 @@ async function callDashScopeVideoApi(config, log, opts) {
     url = base + DASHSCOPE_IMAGE2VIDEO;
     const firstRaw = (first_frame_url && first_frame_url.trim()) || (image_url && image_url.trim());
     const lastRaw = (last_frame_url && last_frame_url.trim()) || firstRaw;
-    const firstUrl = toImageInput(firstRaw);
-    const lastUrl = toImageInput(lastRaw);
+    const firstUrl = await toImageInput(firstRaw, 0);
+    const lastUrl = await toImageInput(lastRaw, 1);
     if (!firstUrl || !lastUrl) {
       return { error: 'wan2.2-kf2v-flash ?????????' };
     }
@@ -1444,7 +1603,7 @@ async function callDashScopeVideoApi(config, log, opts) {
   } else if (model === 'wan2.6-i2v-flash') {
     url = base + DASHSCOPE_VIDEO_GENERATION;
     const imgRaw = (image_url && image_url.trim()) || (first_frame_url && first_frame_url.trim());
-    const imgUrl = toImageInput(imgRaw);
+    const imgUrl = await toImageInput(imgRaw, 0);
     if (!imgUrl) return { error: 'wan2.6-i2v-flash ??????' };
     body = {
       model,
@@ -1454,7 +1613,11 @@ async function callDashScopeVideoApi(config, log, opts) {
   } else if (model === 'wanx2.1-vace-plus') {
     url = base + DASHSCOPE_VIDEO_GENERATION;
     const rawRefs = Array.isArray(reference_urls) ? reference_urls.filter(Boolean).slice(0, 3) : [];
-    const refs = rawRefs.map(toImageInput).filter(Boolean);
+    const refs = [];
+    for (let i = 0; i < rawRefs.length; i++) {
+      const ref = await toImageInput(rawRefs[i], i);
+      if (ref) refs.push(ref);
+    }
     if (refs.length === 0) return { error: 'wanx2.1-vace-plus ???????? 3 ??' };
     body = {
       model,
@@ -1464,7 +1627,11 @@ async function callDashScopeVideoApi(config, log, opts) {
   } else if (model === 'wan2.6-r2v-flash') {
     url = base + DASHSCOPE_VIDEO_GENERATION;
     const rawRefs = Array.isArray(reference_urls) ? reference_urls.filter(Boolean).slice(0, 5) : [];
-    const refs = rawRefs.map(toImageInput).filter(Boolean);
+    const refs = [];
+    for (let i = 0; i < rawRefs.length; i++) {
+      const ref = await toImageInput(rawRefs[i], i);
+      if (ref) refs.push(ref);
+    }
     if (refs.length === 0) return { error: 'wan2.6-r2v-flash ??????????? 5 ??' };
     body = {
       model,
@@ -1485,10 +1652,21 @@ async function callDashScopeVideoApi(config, log, opts) {
         reference_urls: Array.isArray(body.input.reference_urls) ? body.input.reference_urls.map(shorten) : body.input.reference_urls,
       }
     : {};
-  log.info('DashScope ???????base64 ??? = ?????? base64??? download image failed?', {
+  const imageTransportsInBody = body.input
+    ? {
+        first_frame_url: describeImageTransportForLog(body.input.first_frame_url),
+        last_frame_url: describeImageTransportForLog(body.input.last_frame_url),
+        img_url: describeImageTransportForLog(body.input.img_url),
+        ref_images_url: Array.isArray(body.input.ref_images_url) ? body.input.ref_images_url.map(describeImageTransportForLog) : describeImageTransportForLog(body.input.ref_images_url),
+        reference_urls: Array.isArray(body.input.reference_urls) ? body.input.reference_urls.map(describeImageTransportForLog) : describeImageTransportForLog(body.input.reference_urls),
+      }
+    : {};
+  log.info('DashScope video image transport', {
     model,
     video_gen_id,
     files_base_url: baseUrl || '(???)',
+    image_proxy_enabled: allowImageProxyReferenceUpload(),
+    image_transports: imageTransportsInBody,
     image_urls: imageUrlsInBody,
   });
   log.info('Video API request (DashScope)', { url: url.slice(0, 70), model, video_gen_id });
@@ -2529,6 +2707,14 @@ const VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME = new Set([
   'openai',
 ]);
 
+function shouldApplySd2AssetSchemeForVideo(config, protocol) {
+  if (!VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) return false;
+  if (protocol === 'volcengine' || protocol === 'volcengine_omni') {
+    return isVolcOfficialVideoConfig(config);
+  }
+  return true;
+}
+
 function parseJsonColumnForVideo(val) {
   if (val == null || val === '') return null;
   if (typeof val === 'object' && !Array.isArray(val)) return val;
@@ -2872,12 +3058,15 @@ async function callVideoApi(db, log, opts) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
 
-  if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
+  if (db && opts.drama_id && shouldApplySd2AssetSchemeForVideo(config, protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
   } else if (db && opts.drama_id && log?.info) {
     log.info('[视频][SD2认证图] 当前协议不替换为 asset://（避免与 multipart 等不兼容）', {
       video_gen_id: opts.video_gen_id,
       protocol,
+      volc_image_reference_policy: protocol === 'volcengine' || protocol === 'volcengine_omni'
+        ? volcImageReferencePolicy(config)
+        : undefined,
     });
   }
 
@@ -2902,6 +3091,33 @@ async function callVideoApi(db, log, opts) {
   });
 
   if (protocol === 'jimeng_ai_api') {
+    const endpointLower = String(config.endpoint || '').toLowerCase();
+    const baseLower = String(config.base_url || '').toLowerCase();
+    const looksLikeVolcNativeSeedance =
+      endpointLower.includes('/contents/generations/tasks') ||
+      /\/api\/v3(?:\/|$)/.test(baseLower);
+    if (looksLikeVolcNativeSeedance) {
+      log.warn('[视频] jimeng_ai_api 配置指向 Seedance 原生异步端口，自动改用 volcengine_omni 请求体', {
+        video_gen_id: opts.video_gen_id,
+        base_url: config.base_url,
+        endpoint: config.endpoint || '(auto)',
+      });
+      return callVolcengineOmniVideoApi({ ...config, api_protocol: 'volcengine_omni' }, log, {
+        prompt,
+        model,
+        duration: opts.duration,
+        aspect_ratio,
+        resolution: opts.resolution,
+        seed: opts.seed,
+        camera_fixed: opts.camera_fixed,
+        watermark: opts.watermark,
+        image_url: opts.image_url,
+        reference_urls: opts.reference_urls,
+        files_base_url: opts.files_base_url,
+        storage_local_path: opts.storage_local_path,
+        video_gen_id: opts.video_gen_id,
+      });
+    }
     return callJimengAiApiVideo(config, log, {
       prompt,
       model: preferredModel,
@@ -3045,6 +3261,8 @@ async function callVideoApi(db, log, opts) {
   const ratio = aspect_ratio || '16:9';
 
   const isVolc = protocol === 'volcengine';
+  const isVolcNativeRequest = isVolc && isVolcNativeVideoConfig(config);
+  const imagePolicy = isVolc ? volcImageReferencePolicy(config) : 'compatible';
   // ???? model ???????????? API ?? ID?
   const finalModel = isVolc ? normalizeVolcModel(model) : model;
   const hasImage = !!(image_url && image_url.trim());
@@ -3097,6 +3315,32 @@ async function callVideoApi(db, log, opts) {
       } catch (_) {}
     }
   }
+  if (isVolcNativeRequest && hasImage && imageUrlForApi) {
+    const resolvedTransport = describeImageTransportForLog(imageUrlForApi);
+    if (imagePolicy === 'official_asset' && !isVolcOfficialStorageImageRef(imageUrlForApi)) {
+      return {
+        error:
+          '火山官方 Seedance 接口需要使用火山/BytePlus 私有素材库引用（asset://、tos:// 或火山存储 URL），当前参考图不是官方素材引用：' +
+          JSON.stringify(resolvedTransport) +
+          '。请先在「SD2 资产管理」或角色「SD2认证」中上传到官方素材库；OverseasAPI 则可直接使用 S3/中转外链。',
+      };
+    }
+    if (imagePolicy === 'external_url' && String(imageUrlForApi).startsWith('data:')) {
+      return {
+        error:
+          'OverseasAPI/类火山原生异步接口需要可拉取的图片 URL，当前参考图未能转成中转/S3/公网 URL，已阻止提交 base64。' +
+          '请在「存储设置」确认图片中转已启用且 Token 有效，并点击「测试中转」。',
+      };
+    }
+    if (imagePolicy === 'external_url' && !String(imageUrlForApi).startsWith('asset://') && (!isHttpUrl(imageUrlForApi) || !isExternallyReachableHttpUrl(imageUrlForApi))) {
+      return {
+        error:
+          'OverseasAPI/类火山原生异步接口收到的参考图不是公网 URL：' +
+          JSON.stringify(resolvedTransport) +
+          '。请启用图片中转或 S3 后重试。',
+      };
+    }
+  }
 
   // ratio?duration ????????????????/ChatFire ???????
   const body = {
@@ -3109,7 +3353,6 @@ async function callVideoApi(db, log, opts) {
   if (resolution) body.resolution = resolution;
   if (seed != null) body.seed = Number(seed);
   if (camera_fixed != null) body.camera_fixed = Boolean(camera_fixed);
-  if (volcTaskType) body.task_type = volcTaskType;
   if (hasImage && imageUrlForApi) {
     const imagePart = { type: 'image_url', image_url: { url: imageUrlForApi } };
     imagePart.role = volcTaskType === 'i2v' ? 'first_frame' : 'reference_image';
@@ -3121,6 +3364,11 @@ async function callVideoApi(db, log, opts) {
     model,
     video_gen_id,
     task_type: body.task_type,
+    inferred_task_type: volcTaskType,
+    image_transport: hasImage && imageUrlForApi ? describeImageTransportForLog(imageUrlForApi) : null,
+    image_proxy_enabled: allowImageProxyReferenceUpload(),
+    native_seedance_endpoint: isVolcNativeRequest,
+    image_reference_policy: imagePolicy,
     request_body: JSON.stringify({ ...body, content: body.content?.map(c => c.type === 'image_url' ? { ...c, image_url: { url: '(omitted)' } } : c) }),
   });
   const res = await fetch(url, {
@@ -3136,13 +3384,21 @@ async function callVideoApi(db, log, opts) {
   if (!res.ok) {
     log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
     let errMsg = '????????: ' + res.status;
+    let upstreamMsg = '';
     try {
       const errJson = JSON.parse(raw);
       const msg = errJson.error?.message || errJson.message || errJson.error;
-      if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+      if (msg) upstreamMsg = typeof msg === 'string' ? msg.slice(0, 300) : JSON.stringify(msg).slice(0, 300);
     } catch (_) {
-      if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+      if (raw && raw.length) upstreamMsg = raw.slice(0, 200);
     }
+    if ((protocol === 'volcengine' || /seedance/i.test(String(model || ''))) && (res.status === 504 || /504 Gateway|Gateway Time-out|Timeout/i.test(raw))) {
+      errMsg =
+        'Seedance 创建任务超时(504)：上游端口/网关没有及时返回 task_id。' +
+        '请使用异步任务接口 /contents/generations/tasks，并配置查询接口 /contents/generations/tasks/{taskId}；' +
+        '如果当前端口只能同步返回成片，视频生成时间超过网关限制时必然会 504。';
+    }
+    if (upstreamMsg) errMsg += ' - ' + upstreamMsg;
     return { error: errMsg };
   }
   let data;
@@ -3173,7 +3429,13 @@ async function callVideoApi(db, log, opts) {
  */
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
   const provider = (config.provider || '').toLowerCase();
-  const protocol = resolveVideoProtocol(config);
+  const originalProtocol = resolveVideoProtocol(config);
+  let protocol = originalProtocol;
+  let pollConfig = config;
+  if (originalProtocol === 'jimeng_ai_api' && isVolcNativeVideoConfig(config)) {
+    protocol = 'volcengine_omni';
+    pollConfig = { ...config, api_protocol: 'volcengine_omni' };
+  }
   const isDashScope = protocol === 'dashscope';
   const isGemini = protocol === 'gemini';
   const isVidu = protocol === 'vidu';
@@ -3198,7 +3460,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     log.warn('[poll] Jimeng AI API 不应进入轮询', { video_gen_id: videoGenId, task_id: taskId });
     return { error: 'Jimeng AI API 为同步返回视频地址，不应进入轮询' };
   }
-  const queryUrl = () => buildQueryUrl(config, taskId);
+  const queryUrl = () => buildQueryUrl(pollConfig, taskId);
   log.info('[poll] ????', { video_gen_id: videoGenId, task_id: taskId, protocol, poll_url: queryUrl() });
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));

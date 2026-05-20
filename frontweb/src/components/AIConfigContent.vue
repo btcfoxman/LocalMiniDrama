@@ -19,18 +19,22 @@
                 导入配置
               </el-button>
               <input ref="importFileRef" type="file" accept=".json" style="display:none" @change="importConfigs" />
-              <el-button type="success" plain @click="openOneKeyTongyi">
+              <el-dropdown
+                split-button
+                type="primary"
+                class="one-key-provider-dropdown"
+                @click="openOneKeyOverseas"
+                @command="handleOneKeyProviderCommand"
+              >
                 <el-icon><MagicStick /></el-icon>
-                一键配置通义
-              </el-button>
-              <el-button type="success" plain @click="openOneKeyVolc">
-                <el-icon><MagicStick /></el-icon>
-                一键配置火山
-              </el-button>
-              <el-button type="warning" plain @click="openOneKeyAiid">
-                <el-icon><MagicStick /></el-icon>
-                一键配置AIID
-              </el-button>
+                一键配置OverseasAPI
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="tongyi">一键配置通义</el-dropdown-item>
+                    <el-dropdown-item command="volc">一键配置火山</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
             <div class="actions-right">
               <transition name="fade-slide">
@@ -926,28 +930,49 @@ input_reference = (图片文件，可选)</pre>
       </template>
     </el-dialog>
 
-    <!-- 一键配置 AIID -->
+    <!-- 一键配置 OverseasAPI -->
     <el-dialog
-      v-model="oneKeyAiidVisible"
-      title="一键配置 AIID"
+      v-model="oneKeyOverseasVisible"
+      title="一键配置 OverseasAPI"
       width="520px"
       :close-on-click-modal="false"
+      @closed="oneKeyOverseasKey = ''"
     >
       <div class="one-key-help">
         <div class="one-key-section">
           <div class="one-key-section-title">📋 将自动创建以下配置</div>
           <ul class="one-key-list">
-            <li><b>文本/对话</b>：OpenAI 文本（gpt-5.4）— 生成故事剧本</li>
-            <li><b>文本生成图片</b>：OpenAI 图片（gpt-image-2）— 角色/场景/道具图</li>
-            <li><b>分镜图片生成</b>：OpenAI 分镜图片（gpt-image-2）— 支持分镜图生成</li>
-            <li><b>视频生成</b>：火山引擎 Omni（Seedance 2.0 Fast）— 生成视频片段</li>
+            <li><b>文本/对话</b>：OverseasAPI 文本（gpt-5.4）— 生成故事剧本</li>
+            <li><b>文本生成图片</b>：OverseasAPI 图片（gpt-image-2）— 角色/场景/道具图</li>
+            <li><b>分镜图片生成</b>：OverseasAPI 分镜图片（gpt-image-2）— 支持分镜图生成</li>
+            <li><b>视频生成</b>：OverseasAPI 视频（Seedance 2.0 Fast）— 生成视频片段</li>
           </ul>
         </div>
-        <p class="one-key-note">将按局域网 3.6 当前配置创建 AIID 参数，API Key 留空，后续可在列表中自行补充。</p>
+        <div class="one-key-section">
+          <div class="one-key-section-title">🔑 如何申请 API Key</div>
+          <ol class="one-key-list">
+            <li>前往 OverseasAPI 控制台：<a href="https://aiid.edu.kg/console" target="_blank" class="one-key-link">aiid.edu.kg/console</a></li>
+            <li>注册或登录账号，进入 API Key 管理页面</li>
+            <li>创建新的 API Key，并复制到下方输入框</li>
+            <li>确认后会一次性写入文本、图片、分镜图与视频配置</li>
+          </ol>
+          <p class="one-key-note">一个 Key 可用于 OverseasAPI 的文本、图片、分镜图与视频服务；视频会使用 3.6 当前的 Seedance 异步任务接口。</p>
+        </div>
       </div>
+      <el-form label-width="0" style="margin-top: 8px">
+        <el-form-item>
+          <el-input
+            v-model="oneKeyOverseasKey"
+            type="password"
+            placeholder="请输入 OverseasAPI API Key"
+            show-password-on="click"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
       <template #footer>
-        <el-button @click="oneKeyAiidVisible = false">取消</el-button>
-        <el-button type="warning" :loading="oneKeyAiidSaving" @click="submitOneKeyAiid">
+        <el-button @click="oneKeyOverseasVisible = false">取消</el-button>
+        <el-button type="primary" :loading="oneKeyOverseasSaving" :disabled="!oneKeyOverseasKey.trim()" @click="submitOneKeyOverseas">
           确定，一键创建配置
         </el-button>
       </template>
@@ -1239,8 +1264,9 @@ const oneKeyTongyiSaving = ref(false)
 const oneKeyVolcVisible = ref(false)
 const oneKeyVolcKey = ref('')
 const oneKeyVolcSaving = ref(false)
-const oneKeyAiidVisible = ref(false)
-const oneKeyAiidSaving = ref(false)
+const oneKeyOverseasVisible = ref(false)
+const oneKeyOverseasKey = ref('')
+const oneKeyOverseasSaving = ref(false)
 
 function isVolcProvider(provider) {
   return ['volc', 'volces', 'volcengine'].includes(String(provider || '').toLowerCase())
@@ -1455,7 +1481,7 @@ const endpointPreviewInfo = computed(() => {
     } else if (proto === 'volcengine_omni') {
       submitPath = '/contents/generations/tasks'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
-      submitPath = '/videos/generations'
+      submitPath = '/contents/generations/tasks'
     } else if (proto === 'dashscope' || p === 'dashscope') {
       submitPath = '/api/v1/services/aigc/video-generation/video-synthesis'
     } else if (proto === 'gemini' || p === 'gemini') {
@@ -1498,7 +1524,7 @@ const endpointPreviewInfo = computed(() => {
     } else if (proto === 'volcengine_omni') {
       queryPath = '/contents/generations/tasks/{taskId}'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
-      queryPath = '/tasks/{taskId}/info'
+      queryPath = '/contents/generations/tasks/{taskId}'
     } else if (proto === 'dashscope' || p === 'dashscope') {
       queryPath = '/api/v1/tasks/{taskId}/info'
     } else if (proto === 'vidu' || p === 'vidu') {
@@ -1594,11 +1620,11 @@ const VOLCENGINE_CONFIGS = [
   { service_type: 'video', name: '火山引擎 即梦 视频', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volces', model: ['doubao-seedance-1-5-pro-251215'] }
 ]
 
-/** AIID 一键配置用：来自局域网 3.6 当前默认参数，不包含 API Key */
-const AIID_CONFIGS = [
+/** OverseasAPI 一键配置用：使用 3.6 当前默认参数，用户输入 Key 后一次性写入 */
+const OVERSEAS_API_CONFIGS = [
   {
     service_type: 'text',
-    name: 'OpenAI 文本',
+    name: 'OverseasAPI 文本',
     provider: 'openai',
     api_protocol: 'openai',
     base_url: 'https://api.aiid.edu.kg/v1',
@@ -1610,7 +1636,7 @@ const AIID_CONFIGS = [
   },
   {
     service_type: 'image',
-    name: 'OpenAI 文本生成图片',
+    name: 'OverseasAPI 文本生成图片',
     provider: 'openai',
     api_protocol: 'openai',
     base_url: 'https://api.aiid.edu.kg/v1',
@@ -1622,7 +1648,7 @@ const AIID_CONFIGS = [
   },
   {
     service_type: 'storyboard_image',
-    name: 'OpenAI 分镜图片生成',
+    name: 'OverseasAPI 分镜图片生成',
     provider: 'openai',
     api_protocol: 'openai',
     base_url: 'https://api.aiid.edu.kg/v1',
@@ -1633,7 +1659,7 @@ const AIID_CONFIGS = [
   },
   {
     service_type: 'video',
-    name: '火山引擎 视频',
+    name: 'OverseasAPI 视频',
     provider: 'volces',
     api_protocol: 'volcengine_omni',
     base_url: 'https://api.aiid.edu.kg/api/v3',
@@ -1964,6 +1990,16 @@ function openOneKeyTongyi() {
   oneKeyTongyiVisible.value = true
 }
 
+function openOneKeyOverseas() {
+  oneKeyOverseasKey.value = ''
+  oneKeyOverseasVisible.value = true
+}
+
+function handleOneKeyProviderCommand(command) {
+  if (command === 'tongyi') openOneKeyTongyi()
+  else if (command === 'volc') openOneKeyVolc()
+}
+
 async function submitOneKeyTongyi() {
   const apiKey = oneKeyTongyiKey.value.trim()
   if (!apiKey) return
@@ -2027,14 +2063,12 @@ async function submitOneKeyVolc() {
   }
 }
 
-function openOneKeyAiid() {
-  oneKeyAiidVisible.value = true
-}
-
-async function submitOneKeyAiid() {
-  oneKeyAiidSaving.value = true
+async function submitOneKeyOverseas() {
+  const apiKey = oneKeyOverseasKey.value.trim()
+  if (!apiKey) return
+  oneKeyOverseasSaving.value = true
   try {
-    for (const cfg of AIID_CONFIGS) {
+    for (const cfg of OVERSEAS_API_CONFIGS) {
       const models = cfg.model || []
       await aiAPI.create({
         service_type: cfg.service_type,
@@ -2042,7 +2076,7 @@ async function submitOneKeyAiid() {
         provider: cfg.provider,
         api_protocol: cfg.api_protocol || null,
         base_url: cfg.base_url,
-        api_key: '',
+        api_key: apiKey,
         endpoint: cfg.endpoint || null,
         query_endpoint: cfg.query_endpoint || null,
         model: models,
@@ -2052,13 +2086,13 @@ async function submitOneKeyAiid() {
         settings: cfg.settings ? JSON.stringify(cfg.settings) : null,
       })
     }
-    ElMessage.success('已创建 AIID 文本、图片、分镜图、视频配置（未写入 API Key）')
-    oneKeyAiidVisible.value = false
+    ElMessage.success('已创建 OverseasAPI 文本、图片、分镜图、视频配置')
+    oneKeyOverseasVisible.value = false
     await loadList()
   } catch (_) {
     // 错误已由 request 统一提示
   } finally {
-    oneKeyAiidSaving.value = false
+    oneKeyOverseasSaving.value = false
   }
 }
 
@@ -2181,6 +2215,15 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+.one-key-provider-dropdown :deep(.el-button-group) {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.one-key-provider-dropdown :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* 过渡动画 */
