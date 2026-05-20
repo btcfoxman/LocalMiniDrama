@@ -31,6 +31,12 @@ storage:
   public_read: false
   access_key_id: ''
   secret_access_key: ''
+image_proxy:
+  enabled: true
+  upload_url: https://imageproxy.zhongzhuan.chat/api/upload
+  token: ''
+  expire_hours: 23
+  use_for_gemini: true
 ai:
   default_text_provider: openai
   default_image_provider: openai

@@ -28,6 +28,10 @@ function allowRemoteReferenceUpload() {
     && !!storage.bucket;
 }
 
+function allowImageProxyReferenceUpload() {
+  return uploadService.isImageProxyEnabled();
+}
+
 /**
  * ?? provider ??????????api_protocol ??????????
  */
@@ -461,10 +465,28 @@ function resolveImageInputForOmniLocalBase64(rawUrl, files_base_url, storage_loc
 /**
  * Omni 参考图：已是公网 http(s) 则直传；否则优先 uploadService 图床（中转可拉取），失败再 base64
  */
+async function uploadDataImageToProxyForVideo(rawUrl, log, tag) {
+  const raw = String(rawUrl || '').trim();
+  const m = raw.match(/^data:([\w/+.-]+);base64,(.+)$/is);
+  if (!m || !allowImageProxyReferenceUpload()) return null;
+  try {
+    const buf = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+    const mt = (m[1] || 'image/jpeg').toLowerCase();
+    const mime = mt.includes('png') ? 'image/png' : mt.includes('webp') ? 'image/webp' : 'image/jpeg';
+    return await uploadToImageProxy(buf, mime, log, tag);
+  } catch (e) {
+    log?.warn?.('[video-ref] upload data image to proxy failed', { tag, error: e.message });
+    return null;
+  }
+}
+
 async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
   const raw = (rawUrl || '').trim();
   if (!raw) return null;
-  if (raw.startsWith('data:')) return raw;
+  if (raw.startsWith('data:')) {
+    const proxyUrl = await uploadDataImageToProxyForVideo(raw, log, `kling_omni_vg${video_gen_id}_${index}`);
+    return proxyUrl || raw;
+  }
   if (raw.startsWith('asset://')) return raw;
 
   const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
@@ -480,11 +502,11 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
 
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
-  if (!allowRemoteReferenceUpload()) {
+  if (!allowRemoteReferenceUpload() && !allowImageProxyReferenceUpload()) {
     return resolveImageInputForOmniLocalBase64(raw, files_base_url, storage_local_path, log, video_gen_id);
   }
 
-  if (storage_local_path) {
+  if (storage_local_path && allowImageProxyReferenceUpload()) {
     const tag = `kling_omni_vg${video_gen_id}_${index}`;
     const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, tag);
     if (proxyUrl) {
@@ -503,7 +525,10 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
 async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
   const raw = (rawUrl || '').trim();
   if (!raw) return null;
-  if (raw.startsWith('data:')) return raw;
+  if (raw.startsWith('data:')) {
+    const proxyUrl = await uploadDataImageToProxyForVideo(raw, log, `volc_omni_vg${video_gen_id}_${index}`);
+    return proxyUrl || raw;
+  }
   if (raw.startsWith('asset://')) return raw;
 
   const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
@@ -519,11 +544,11 @@ async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_p
 
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
-  if (!allowRemoteReferenceUpload()) {
+  if (!allowRemoteReferenceUpload() && !allowImageProxyReferenceUpload()) {
     return resolveImageInputForOmniLocalBase64(raw, files_base_url, storage_local_path, log, video_gen_id);
   }
 
-  if (storage_local_path) {
+  if (storage_local_path && allowImageProxyReferenceUpload()) {
     const tag = `volc_omni_vg${video_gen_id}_${index}`;
     const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, tag);
     if (proxyUrl) {
@@ -1192,6 +1217,9 @@ async function callKlingVideoApi(config, log, opts) {
   let imageInput = null;
   const rawImgUrl = (image_url || '').trim();
   if (rawImgUrl) {
+    imageInput = await resolveImageInputForOmniAsync(rawImgUrl, files_base_url, storage_local_path, log, video_gen_id, 0);
+  }
+  if (rawImgUrl && !imageInput) {
     if (rawImgUrl.startsWith('asset://')) {
       imageInput = rawImgUrl;
     } else if (rawImgUrl.startsWith('data:')) {
@@ -1651,10 +1679,10 @@ async function callViduVideoApi(config, log, opts) {
   // ????localhost ? ??????? URL
   if (hasImage) {
     const rawImgUrl = image_url.trim();
-    let publicImgUrl = null;
-    if (!allowRemoteReferenceUpload()) {
+    let publicImgUrl = await resolveImageInputForOmniAsync(rawImgUrl, files_base_url, storage_local_path, log, video_gen_id, 0);
+    if (!publicImgUrl && !allowRemoteReferenceUpload()) {
       publicImgUrl = resolveImageInputForOmniLocalBase64(rawImgUrl, files_base_url, storage_local_path, log, video_gen_id);
-    } else if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
+    } else if (!publicImgUrl && /localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
       log.info('[Vidu] ???? localhost???????', { original: rawImgUrl, video_gen_id });
       publicImgUrl = await uploadLocalImageToProxy(storage_local_path, rawImgUrl, log, `vidu_vg${video_gen_id}`);
       if (publicImgUrl) {
@@ -1665,7 +1693,7 @@ async function callViduVideoApi(config, log, opts) {
       } else {
         log.warn('[Vidu] ???????? URL??????', { video_gen_id });
       }
-    } else {
+    } else if (!publicImgUrl) {
       publicImgUrl = rawImgUrl;
     }
     if (publicImgUrl && !publicImgUrl.startsWith('data:') && !isExternallyReachableHttpUrl(publicImgUrl)) {
@@ -1736,7 +1764,7 @@ async function resolveVeo3ImageForApi(rawImgUrl, storage_local_path, log, video_
     /* 非绝对 URL */
   }
 
-  if (!allowRemoteReferenceUpload()) {
+  if (!allowRemoteReferenceUpload() && !allowImageProxyReferenceUpload()) {
     const resolved = resolveImageInputForOmniLocalBase64(raw, '', storage_local_path, log, video_gen_id);
     if (resolved?.startsWith('data:')) return { kind: 'data', value: resolved };
     if (isExternallyReachableHttpUrl(resolved)) return { kind: 'url', value: normalizeExternalHttpUrl(resolved) };
@@ -2143,7 +2171,7 @@ async function resolveJimengApiImageBuffer(rawUrl, files_base_url, storage_local
     const ab = await res.arrayBuffer();
     return { buffer: Buffer.from(ab), filename: 'ref_' + index + '.jpg' };
   }
-  if (storage_local_path && allowRemoteReferenceUpload()) {
+  if (storage_local_path && (allowRemoteReferenceUpload() || allowImageProxyReferenceUpload())) {
     const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, 'jimeng_ai_vg' + video_gen_id + '_' + index);
     if (proxyUrl) {
       const res = await fetch(proxyUrl);
@@ -3036,6 +3064,17 @@ async function callVideoApi(db, log, opts) {
 
   // ???? localhost URL????????????? base64?? DashScope ???
   let imageUrlForApi = image_url && image_url.trim();
+  if (hasImage && imageUrlForApi && !String(imageUrlForApi).startsWith('asset://')) {
+    const resolvedImageForApi = await resolveImageInputForOmniAsync(
+      imageUrlForApi,
+      opts.files_base_url,
+      opts.storage_local_path,
+      log,
+      video_gen_id,
+      0
+    );
+    if (resolvedImageForApi) imageUrlForApi = resolvedImageForApi;
+  }
   if (
     hasImage &&
     imageUrlForApi &&

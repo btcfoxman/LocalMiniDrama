@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const objectStorage = require('./objectStorageService');
+const uploadService = require('./uploadService');
 
 let configPath = null;
 let configCache = null;
@@ -124,14 +125,20 @@ function normalizeStorageSettings(input, current = {}) {
   return { ok: true, storage: next };
 }
 
+function normalizeImageProxyInput(input, current = {}) {
+  return uploadService.normalizeImageProxySettings(input || {}, current || {});
+}
+
 function getStorageSettings(cfg) {
   const storage = {
     ...LOCAL_STORAGE_DEFAULTS,
     ...(cfg?.storage || {}),
   };
   storage.type = normalizeStorageType(storage.type);
+  const imageProxy = normalizeImageProxyInput(cfg?.image_proxy || {});
   return {
     storage,
+    image_proxy: imageProxy,
     public_url_preview: storage.type === 's3' ? objectStorage.publicUrlForKey(storage, 'example.png') : '/static/example.png',
   };
 }
@@ -140,12 +147,18 @@ function updateStorageSettings(cfg, log, input) {
   const normalized = normalizeStorageSettings(input, cfg?.storage || {});
   if (!normalized.ok) return normalized;
   const storage = { ...normalized.storage, user_customized: true };
+  const imageProxy = normalizeImageProxyInput(
+    Object.prototype.hasOwnProperty.call(input || {}, 'image_proxy') ? input.image_proxy : cfg?.image_proxy,
+    cfg?.image_proxy || {}
+  );
   if (!cfg.storage) cfg.storage = {};
   cfg.storage = storage;
+  cfg.image_proxy = imageProxy;
 
   try {
     const current = readYamlConfig();
     current.storage = storage;
+    current.image_proxy = imageProxy;
     writeYamlConfig(current);
   } catch (err) {
     log?.warn?.('Failed to write storage config', { error: err.message });
@@ -157,6 +170,7 @@ function updateStorageSettings(cfg, log, input) {
   return {
     ok: true,
     storage,
+    image_proxy: imageProxy,
     public_url_preview: storage.type === 's3' ? objectStorage.publicUrlForKey(storage, 'example.png') : '/static/example.png',
   };
 }
@@ -165,7 +179,22 @@ async function testStorageSettings(cfg, log, input) {
   const normalized = normalizeStorageSettings(input || cfg?.storage || {}, cfg?.storage || {});
   if (!normalized.ok) return normalized;
   const storage = normalized.storage;
+  const imageProxy = normalizeImageProxyInput(
+    Object.prototype.hasOwnProperty.call(input || {}, 'image_proxy') ? input.image_proxy : cfg?.image_proxy,
+    cfg?.image_proxy || {}
+  );
   if (storage.type !== 's3') {
+    if (imageProxy.enabled) {
+      const png1x1 = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+        'base64'
+      );
+      const url = await uploadService.uploadToImageProxy(png1x1, 'image/png', log, 'settings_image_proxy_test', imageProxy);
+      if (!url) {
+        return { ok: false, type: 'image_proxy', error: 'Image proxy upload failed. Please check upload URL and token.' };
+      }
+      return { ok: true, type: 'image_proxy', message: 'Image proxy upload test passed', url };
+    }
     return {
       ok: true,
       type: 'local',

@@ -3,7 +3,7 @@
     <div class="storage-head">
       <div>
         <h3>存储设置</h3>
-        <p>本地模式不会上传到云端 S3。模型生成需要参考图时，后端会读取本地文件并转成 base64 随请求提交。</p>
+        <p>本地模式不会上传到云端 S3。启用图片中转后，模型请求前会先把本地图片转成公网图链；中转不可用时再回退 base64。</p>
       </div>
       <div class="storage-state">
         <el-tag :type="isS3Mode ? 'warning' : 'success'" effect="plain">
@@ -20,7 +20,7 @@
       class="storage-alert"
       :title="isS3Mode
         ? 'S3 模式会把上传图片、编辑后图片和生成结果同步到你填写的对象存储。'
-        : '打包版默认使用本地存储，S3 配置为空；后续升级不会覆盖你保存过的自定义配置。'"
+        : '打包版默认使用本地存储，S3 配置为空；图片中转默认开启，填写 Token 后会优先用中转外链请求模型。'"
     />
 
     <el-form label-position="top" class="storage-form">
@@ -42,6 +42,33 @@
           <el-input v-model="form.local_path" placeholder="./data/storage-cache" />
         </el-form-item>
       </div>
+
+      <template v-if="!isS3Mode">
+        <div class="proxy-panel">
+          <div class="proxy-row">
+            <div>
+              <div class="proxy-title">本地图片中转</div>
+              <p>请求模型前先上传本地参考图，拿到公网链接后传给业务 API；上传失败时自动回退 base64。</p>
+            </div>
+            <el-switch v-model="imageProxy.enabled" active-text="开启" inactive-text="关闭" />
+          </div>
+
+          <div v-if="imageProxy.enabled" class="form-grid proxy-grid">
+            <el-form-item label="中转接口" class="span-2">
+              <el-input v-model="imageProxy.upload_url" placeholder="https://imageproxy.zhongzhuan.chat/api/upload" />
+            </el-form-item>
+            <el-form-item label="Bearer Token">
+              <el-input v-model="imageProxy.token" type="password" show-password autocomplete="new-password" placeholder="填写后启用中转上传" />
+            </el-form-item>
+            <el-form-item label="缓存有效期（小时）">
+              <el-input-number v-model="imageProxy.expire_hours" :min="1" :max="168" controls-position="right" />
+            </el-form-item>
+            <el-form-item label="Gemini 参考图">
+              <el-switch v-model="imageProxy.use_for_gemini" active-text="使用中转" inactive-text="base64" />
+            </el-form-item>
+          </div>
+        </div>
+      </template>
 
       <template v-if="isS3Mode">
         <div class="form-grid">
@@ -87,9 +114,9 @@
           <el-icon><Check /></el-icon>
           保存
         </el-button>
-        <el-button v-if="isS3Mode" plain :loading="testing" @click="test">
+        <el-button v-if="isS3Mode || imageProxy.enabled" plain :loading="testing" @click="test">
           <el-icon><Connection /></el-icon>
-          测试上传
+          {{ testButtonLabel }}
         </el-button>
         <el-button plain @click="resetLocalMode">
           <el-icon><RefreshLeft /></el-icon>
@@ -122,12 +149,22 @@ const LOCAL_DEFAULT = Object.freeze({
   user_customized: false,
 })
 
+const IMAGE_PROXY_DEFAULT = Object.freeze({
+  enabled: true,
+  upload_url: 'https://imageproxy.zhongzhuan.chat/api/upload',
+  token: '',
+  expire_hours: 23,
+  use_for_gemini: true,
+})
+
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const form = reactive({ ...LOCAL_DEFAULT })
+const imageProxy = reactive({ ...IMAGE_PROXY_DEFAULT })
 
 const isS3Mode = computed(() => form.type === 's3')
+const testButtonLabel = computed(() => (isS3Mode.value ? '测试上传' : '测试中转'))
 const publicPreview = computed(() => {
   if (!isS3Mode.value) return '/static/example.png'
   const base = (form.public_base_url || form.base_url || '').replace(/\/$/, '')
@@ -150,12 +187,40 @@ function applyStorage(storage = {}) {
   })
 }
 
+function applyImageProxy(proxy = {}) {
+  Object.assign(imageProxy, {
+    ...IMAGE_PROXY_DEFAULT,
+    ...proxy,
+    enabled: proxy.enabled !== false,
+    upload_url: proxy.upload_url || IMAGE_PROXY_DEFAULT.upload_url,
+    token: proxy.token || '',
+    expire_hours: Number(proxy.expire_hours) > 0 ? Number(proxy.expire_hours) : IMAGE_PROXY_DEFAULT.expire_hours,
+    use_for_gemini: proxy.use_for_gemini !== false,
+  })
+}
+
+function applySettings(res = {}) {
+  applyStorage(res?.storage || {})
+  applyImageProxy(res?.image_proxy || {})
+}
+
+function normalizeImageProxyPayload() {
+  return {
+    enabled: !!imageProxy.enabled,
+    upload_url: String(imageProxy.upload_url || IMAGE_PROXY_DEFAULT.upload_url).trim() || IMAGE_PROXY_DEFAULT.upload_url,
+    token: String(imageProxy.token || '').trim(),
+    expire_hours: Number(imageProxy.expire_hours) > 0 ? Number(imageProxy.expire_hours) : IMAGE_PROXY_DEFAULT.expire_hours,
+    use_for_gemini: !!imageProxy.use_for_gemini,
+  }
+}
+
 function normalizePayload() {
   if (!isS3Mode.value) {
     return {
       ...LOCAL_DEFAULT,
       type: 'local',
       local_path: String(form.local_path || LOCAL_DEFAULT.local_path).trim() || LOCAL_DEFAULT.local_path,
+      image_proxy: normalizeImageProxyPayload(),
     }
   }
   return {
@@ -171,10 +236,14 @@ function normalizePayload() {
     public_read: !!form.public_read,
     access_key_id: String(form.access_key_id || '').trim(),
     secret_access_key: String(form.secret_access_key || '').trim(),
+    image_proxy: normalizeImageProxyPayload(),
   }
 }
 
 function validatePayload(payload) {
+  if (payload.image_proxy?.enabled && payload.image_proxy?.upload_url && !/^https?:\/\//i.test(payload.image_proxy.upload_url)) {
+    return '中转接口必须以 http:// 或 https:// 开头'
+  }
   if (payload.type !== 's3') return ''
   if (!payload.endpoint) return '请填写 S3 Endpoint'
   if (!/^https?:\/\//i.test(payload.endpoint)) return 'Endpoint 必须以 http:// 或 https:// 开头'
@@ -188,7 +257,7 @@ async function loadStorageSettings() {
   loading.value = true
   try {
     const res = await storageSettingsAPI.get()
-    applyStorage(res?.storage || {})
+    applySettings(res || {})
   } finally {
     loading.value = false
   }
@@ -205,6 +274,7 @@ async function save() {
   try {
     const res = await storageSettingsAPI.update(payload)
     applyStorage(res?.storage || payload)
+    applyImageProxy(res?.image_proxy || payload.image_proxy)
     ElMessage.success(payload.type === 's3' ? 'S3 配置已保存' : '本地存储已启用')
   } finally {
     saving.value = false
@@ -221,7 +291,11 @@ async function test() {
   testing.value = true
   try {
     const res = await storageSettingsAPI.test(payload)
-    ElMessage.success(res?.deleted ? 'S3 签名上传测试通过' : '上传通过，测试文件清理失败')
+    if (res?.type === 'image_proxy') {
+      ElMessage.success('图片中转上传测试通过')
+    } else {
+      ElMessage.success(res?.deleted ? 'S3 签名上传测试通过' : '上传通过，测试文件清理失败')
+    }
   } finally {
     testing.value = false
   }
@@ -300,6 +374,34 @@ onMounted(loadStorageSettings)
 .local-grid {
   margin-bottom: 2px;
 }
+.proxy-panel {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 4px 0 14px;
+  background: var(--el-fill-color-extra-light);
+}
+.proxy-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.proxy-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  margin-bottom: 4px;
+}
+.proxy-row p {
+  margin: 0;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.proxy-grid {
+  margin-top: 12px;
+}
 .span-2 {
   grid-column: span 2;
 }
@@ -353,6 +455,9 @@ onMounted(loadStorageSettings)
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+  }
+  .proxy-row {
+    flex-direction: column;
   }
 }
 </style>

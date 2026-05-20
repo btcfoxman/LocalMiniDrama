@@ -7,6 +7,41 @@ const { randomUUID } = require('crypto');
 const objectStorage = require('./objectStorageService');
 
 const fsp = fs.promises;
+const DEFAULT_IMAGE_PROXY_UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload';
+
+function trimValue(value) {
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function boolValue(value, defaultValue) {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const s = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'off'].includes(s)) return false;
+  return defaultValue;
+}
+
+function numberValue(value, defaultValue) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : defaultValue;
+}
+
+function normalizeImageProxySettings(input = {}, current = {}) {
+  const source = input || {};
+  const get = (key, fallback = '') => {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+    return current[key] !== undefined ? current[key] : fallback;
+  };
+  return {
+    enabled: boolValue(get('enabled', true), true),
+    upload_url: trimValue(get('upload_url', DEFAULT_IMAGE_PROXY_UPLOAD_URL)) || DEFAULT_IMAGE_PROXY_UPLOAD_URL,
+    token: trimValue(get('token')),
+    expire_hours: numberValue(get('expire_hours', 23), 23),
+    use_for_gemini: boolValue(get('use_for_gemini', true), true),
+  };
+}
 
 function loadStorageConfig() {
   try {
@@ -15,6 +50,21 @@ function loadStorageConfig() {
   } catch (_) {
     return {};
   }
+}
+
+function loadImageProxyConfig(override = null) {
+  if (override) return normalizeImageProxySettings(override);
+  try {
+    const { loadConfig } = require('../config');
+    return normalizeImageProxySettings(loadConfig().image_proxy || {});
+  } catch (_) {
+    return normalizeImageProxySettings({});
+  }
+}
+
+function isImageProxyEnabled(override = null) {
+  const proxy = loadImageProxyConfig(override);
+  return !!(proxy.enabled && proxy.upload_url && proxy.token);
 }
 
 function buildPublicUrl(localPath, baseUrl = '') {
@@ -215,8 +265,20 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
  * 响应：{ url: "https://imageproxy.zhongzhuan.chat/api/proxy/image/<hash>", created: ... }
  * 失败自动重试，最多 3 次；成功返回 string URL，全部失败返回 null。
  */
-async function uploadToImageProxy(imageBuffer, mimeType, log, tag) {
-  const UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload';
+async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride = null) {
+  const proxy = loadImageProxyConfig(proxyOverride);
+  if (!proxy.enabled) {
+    log?.info?.('[图床上传] 已关闭', { tag });
+    return null;
+  }
+  if (!proxy.upload_url) {
+    log?.warn?.('[图床上传] 未配置 upload_url', { tag });
+    return null;
+  }
+  if (!proxy.token) {
+    log?.warn?.('[图床上传] 未配置 token，跳过中转上传', { tag, upload_url: proxy.upload_url });
+    return null;
+  }
   const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
   const ext = extMap[mimeType] || 'jpg';
   const filename = `ref_${Date.now()}.${ext}`;
@@ -229,9 +291,12 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag) {
       const headerLine = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`;
       const footerLine = `\r\n--${boundary}--\r\n`;
       const body = Buffer.concat([Buffer.from(headerLine, 'utf-8'), imageBuffer, Buffer.from(footerLine, 'utf-8')]);
-      const res = await fetch(UPLOAD_URL, {
+      const res = await fetch(proxy.upload_url, {
         method: 'POST',
-        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          Authorization: `Bearer ${proxy.token}`,
+        },
         body,
       });
       const raw = await res.text();
@@ -309,6 +374,9 @@ module.exports = {
   downloadImageToLocal,
   uploadToImageProxy,
   uploadLocalImageToProxy,
+  normalizeImageProxySettings,
+  loadImageProxyConfig,
+  isImageProxyEnabled,
   saveBufferToStorage,
   uploadLocalPathToStorage,
   ensureLocalFile,

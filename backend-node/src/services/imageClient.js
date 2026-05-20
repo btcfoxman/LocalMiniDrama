@@ -60,9 +60,7 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
-  if (!_appConfig) {
-    try { _appConfig = loadConfig(); } catch (_) { _appConfig = {}; }
-  }
+  try { _appConfig = loadConfig(); } catch (_) { if (!_appConfig) _appConfig = {}; }
   return _appConfig;
 }
 
@@ -326,7 +324,7 @@ function klingImageAspectRatio(size) {
  * 认证：Authorization: Bearer {api_key}
  */
 async function callKlingImageApi(config, log, opts) {
-  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
+  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, db } = opts;
   const base = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
   const apiKey = config.api_key || '';
   const headers = {
@@ -342,7 +340,11 @@ async function callKlingImageApi(config, log, opts) {
   const m = model || 'kling-image';
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = [];
+  for (const r of rawRefs) {
+    const resolved = await resolveImageRefForOpenAICompat(r, files_base_url, storage_local_path, log, db, `kling_image_${image_gen_id}`);
+    if (resolved) resolvedRefs.push(resolved);
+  }
 
   const body = {
     model: m,
@@ -468,7 +470,7 @@ async function callKlingImageApi(config, log, opts) {
  * 结果轮询：GET /api/v1/nanobanana/record-info?taskId=xxx
  */
 async function callNanoBananaImageApi(config, log, opts) {
-  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
+  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, db } = opts;
   const base = (config.base_url || 'https://api.nanobananaapi.ai').replace(/\/$/, '');
   const apiKey = config.api_key || '';
   const headers = {
@@ -477,7 +479,11 @@ async function callNanoBananaImageApi(config, log, opts) {
   };
   // 解析参考图：本地路径 / localhost URL → base64，确保外部 API 可访问
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const refs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const refs = [];
+  for (const r of rawRefs) {
+    const resolved = await resolveImageRefForOpenAICompat(r, files_base_url, storage_local_path, log, db, `nano_image_${image_gen_id}`);
+    if (resolved) refs.push(resolved);
+  }
   const aspectRatio = nanoBananaAspectRatio(size);
   const m = (model || 'nano-banana-2').toLowerCase();
 
@@ -952,7 +958,46 @@ async function dataImageRefToPublicUrl(value, storagePath, log) {
   }
 }
 
-async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalPath, log) {
+function shouldUseImageProxyForLocalRequests() {
+  const cfg = getAppConfig();
+  const storageType = String(cfg?.storage?.type || 'local').toLowerCase();
+  return storageType !== 's3' && uploadService.isImageProxyEnabled(cfg?.image_proxy);
+}
+
+async function dataImageRefToProxyUrl(value, log, db, tag) {
+  const raw = String(value || '').trim();
+  const m = raw.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (!m) return null;
+  const mimeType = m[1].toLowerCase();
+  let buffer;
+  try {
+    buffer = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+  } catch (_) {
+    return null;
+  }
+  if (!buffer.length) return null;
+  const cacheKey = buildCacheKey(raw, buffer);
+  const cached = db ? getProxyCache(db, cacheKey) : null;
+  if (cached) return cached;
+  const proxyUrl = await uploadService.uploadToImageProxy(buffer, mimeType, log, tag || 'image_ref_proxy');
+  if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
+  return proxyUrl || null;
+}
+
+async function localImageRefToProxyUrl(value, filesBaseUrl, storagePath, storage, log, db, tag) {
+  const raw = String(value || '').trim();
+  if (!raw || isDataImageUrl(raw)) return null;
+  const relPath = relativePathFromImageRef(raw, filesBaseUrl, storage);
+  if (!relPath && isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
+  const cacheKey = relPath || `imageproxy:url:${crypto.createHash('sha256').update(raw).digest('hex').slice(0, 48)}`;
+  const cached = db ? getProxyCache(db, cacheKey) : null;
+  if (cached) return cached;
+  const proxyUrl = await uploadService.uploadLocalImageToProxy(storagePath, relPath || raw, log, tag || 'image_ref_proxy');
+  if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
+  return proxyUrl || null;
+}
+
+async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalPath, log, db = null, tag = 'image_ref_proxy') {
   if (!value || !String(value).trim()) return null;
   const raw = String(value).trim();
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
@@ -993,11 +1038,25 @@ async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalP
     }
   }
 
+  if (shouldUseImageProxyForLocalRequests()) {
+    const proxyUrl = isDataImageUrl(raw)
+      ? await dataImageRefToProxyUrl(raw, log, db, tag)
+      : await localImageRefToProxyUrl(raw, filesBaseUrl, storagePath, storage, log, db, tag);
+    if (isExternallyReachableHttpUrl(proxyUrl)) {
+      const normalizedProxyUrl = normalizeExternalHttpUrl(proxyUrl);
+      log?.info?.('[image-ref] reference resolved as image proxy URL', {
+        tag,
+        url: normalizedProxyUrl,
+      });
+      return normalizedProxyUrl;
+    }
+  }
+
   return resolveImageRef(raw, filesBaseUrl, storageLocalPath);
 }
 
 async function callDashScopeImageApi(config, log, opts) {
-  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, negative_prompt } = opts;
+  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, negative_prompt, db } = opts;
   const base = (config.base_url || '').replace(/\/$/, '');
   const url = base + (config.endpoint || '/api/v1/services/aigc/multimodal-generation/generation');
   if (!url.includes('dashscope')) {
@@ -1071,7 +1130,7 @@ async function callDashScopeImageApi(config, log, opts) {
   const content = [{ text: prompt || '' }];
   const resolvedRefs = [];
   for (const ref of refs.slice(0, 10)) {
-    const img = resolveImageRef(ref, files_base_url, storage_local_path);
+    const img = await resolveImageRefForOpenAICompat(ref, files_base_url, storage_local_path, log, db, `dashscope_image_${image_gen_id}`);
     if (img) {
       content.push({ image: img });
       resolvedRefs.push(img.startsWith('data:') ? '(base64)' : img);
@@ -1284,8 +1343,8 @@ async function callGeminiImageApi(db, config, log, opts) {
   // image_proxy.use_for_gemini = false（默认）→ 直接 inlineData base64
   // image_proxy.use_for_gemini = true          → 上传图床后用 fileData.fileUri
   const globalCfg = (() => { try { return require('../config').loadConfig(); } catch (_) { return {}; } })();
-  const storageType = String(globalCfg?.storage?.type || 'local').toLowerCase();
-  const useImageProxy = storageType === 's3' && !!(globalCfg?.image_proxy?.use_for_gemini);
+  const imageProxyCfg = uploadService.loadImageProxyConfig(globalCfg?.image_proxy || {});
+  const useImageProxy = uploadService.isImageProxyEnabled(imageProxyCfg) && imageProxyCfg.use_for_gemini !== false;
   log.info('[Gemini图生] 参考图传输方式', { image_gen_id, use_image_proxy: useImageProxy });
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
@@ -1391,11 +1450,12 @@ async function callGeminiImageApi(db, config, log, opts) {
         if (fileUri) {
           setProxyCache(db, cacheKey, fileUri);
         } else {
-          log.warn('[Gemini图生] 参考图 上传图床失败，该参考图将跳过', { image_gen_id, ref_index: i, elapsed: elapsed() });
-          continue;
+          log.warn('[Gemini image] image proxy upload failed; falling back to inlineData', { image_gen_id, ref_index: i, elapsed: elapsed() });
         }
       }
-      imagePart = { fileData: { fileUri, mimeType } };
+      imagePart = fileUri
+        ? { fileData: { fileUri, mimeType } }
+        : { inlineData: { mimeType, data: imageBuffer.toString('base64') } };
     } else {
       imagePart = { inlineData: { mimeType, data: imageBuffer.toString('base64') } };
     }
@@ -1575,6 +1635,7 @@ async function callImageApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       negative_prompt: autoNegativePrompt,
+      db,
     });
   }
 
@@ -1584,6 +1645,7 @@ async function callImageApi(db, log, opts) {
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
+      db,
     });
   }
 
@@ -1593,6 +1655,7 @@ async function callImageApi(db, log, opts) {
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
+      db,
     });
   }
 
@@ -1614,7 +1677,7 @@ async function callImageApi(db, log, opts) {
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
   const resolvedRefs = [];
   for (const r of rawRefs) {
-    const resolved = await resolveImageRefForOpenAICompat(r, files_base_url, storage_local_path, log);
+    const resolved = await resolveImageRefForOpenAICompat(r, files_base_url, storage_local_path, log, db, `image_${image_gen_id}`);
     if (resolved) resolvedRefs.push(resolved);
   }
   if (resolvedRefs.length > 0) {
