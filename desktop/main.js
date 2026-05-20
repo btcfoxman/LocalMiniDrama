@@ -77,10 +77,7 @@ function shouldSyncBundledStorage(userStorage, bundledStorage) {
     userStorage.base_url,
     userStorage.public_base_url,
   ].filter(Boolean).join(' ');
-  if (/192\.168\.3\.6/i.test(text)) return true;
-  if (!/s3-3-6\.aiid\.edu\.kg/i.test(text)) return false;
-  return String(userStorage.bucket || '') === String(bundledStorage.bucket || '')
-    && String(userStorage.access_key_id || '') === String(bundledStorage.access_key_id || '');
+  return /192\.168\.3\.6|s3-3-6\.aiid\.edu\.kg/i.test(text);
 }
 
 function ensureBackendCwd(backendCwd) {
@@ -104,8 +101,9 @@ function ensureBackendCwd(backendCwd) {
 
   // 每次启动时，将内置 config.yaml 中的 vendor_lock 节强制同步到用户 config.yaml，
   // 确保打包时配置的锁定策略对所有用户生效，不受首次安装后遗留旧配置影响。
-  // Storage defaults are synced only for packaged/default 3.6 configs. Once a
-  // user saves a custom S3 target in the app, keep it across future upgrades.
+  // Storage defaults are synced for first installs and old packaged 3.6
+  // defaults. Once a user saves a custom target in the app, keep it across
+  // future upgrades.
   if (fs.existsSync(bundledConfig) && fs.existsSync(configPath)) {
     try {
       const yaml = require('js-yaml');

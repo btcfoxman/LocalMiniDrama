@@ -12,6 +12,22 @@ const {
   jwtPartLengths,
 } = require('./klingJwt');
 
+function getRuntimeStorageConfig() {
+  try {
+    const { loadConfig } = require('../config');
+    return loadConfig().storage || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function allowRemoteReferenceUpload() {
+  const storage = getRuntimeStorageConfig();
+  return String(storage?.type || 'local').toLowerCase() === 's3'
+    && !!storage.endpoint
+    && !!storage.bucket;
+}
+
 /**
  * ?? provider ??????????api_protocol ??????????
  */
@@ -143,6 +159,30 @@ function videoMimeFromPathLike(value) {
   }[ext] || 'image/png';
 }
 
+function readLocalImageReference(rawUrl, filesBaseUrl, storageLocalPath, log, context = {}) {
+  if (!storageLocalPath) return null;
+  const relPath = relPathFromVideoImageRef(rawUrl, filesBaseUrl);
+  if (!relPath) return null;
+  const filePath = path.join(storageLocalPath, relPath);
+  try {
+    const resolved = path.resolve(filePath);
+    const baseResolved = path.resolve(storageLocalPath);
+    const baseWithSep = baseResolved.endsWith(path.sep) ? baseResolved : baseResolved + path.sep;
+    if (resolved !== baseResolved && !resolved.startsWith(baseWithSep)) return null;
+    if (!fs.existsSync(filePath)) return null;
+    const buffer = fs.readFileSync(filePath);
+    return {
+      buffer,
+      mime: videoMimeFromPathLike(filePath),
+      filename: path.basename(filePath) || 'reference.jpg',
+      filePath,
+    };
+  } catch (e) {
+    log?.warn?.('[video-ref] read local reference image failed', { ...context, error: e.message });
+    return null;
+  }
+}
+
 function relPathFromVideoImageRef(rawUrl, filesBaseUrl) {
   const raw = String(rawUrl || '').trim();
   if (!raw || raw.startsWith('data:') || raw.startsWith('asset://')) return '';
@@ -160,12 +200,15 @@ function relPathFromVideoImageRef(rawUrl, filesBaseUrl) {
     }
     return '';
   }
-  return normalizeStorageRelativePath(decodeUriPathForSd2Match(raw.replace(/^\/+/, '')));
+  let rel = decodeUriPathForSd2Match(raw.replace(/^\/+/, ''));
+  if (rel.toLowerCase().startsWith('static/')) rel = rel.slice(7);
+  return normalizeStorageRelativePath(rel);
 }
 
 async function resolveVideoImageToPublicStorageUrl(rawUrl, filesBaseUrl, storageLocalPath, log, videoGenId, index, tag) {
   const raw = String(rawUrl || '').trim();
   if (!raw || raw.startsWith('data:') || raw.startsWith('asset://')) return null;
+  if (!allowRemoteReferenceUpload()) return null;
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
   if (!storageLocalPath) return null;
 
@@ -437,6 +480,10 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
 
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
 
+  if (!allowRemoteReferenceUpload()) {
+    return resolveImageInputForOmniLocalBase64(raw, files_base_url, storage_local_path, log, video_gen_id);
+  }
+
   if (storage_local_path) {
     const tag = `kling_omni_vg${video_gen_id}_${index}`;
     const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, tag);
@@ -471,6 +518,10 @@ async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_p
   if (publicStorageUrl) return publicStorageUrl;
 
   if (isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
+
+  if (!allowRemoteReferenceUpload()) {
+    return resolveImageInputForOmniLocalBase64(raw, files_base_url, storage_local_path, log, video_gen_id);
+  }
 
   if (storage_local_path) {
     const tag = `volc_omni_vg${video_gen_id}_${index}`;
@@ -1316,10 +1367,14 @@ async function callDashScopeVideoApi(config, log, opts) {
     if (s.startsWith('http://') || s.startsWith('https://')) {
       if (!isLocalhost || !storage_local_path) return s;
       const afterStatic = s.split('/static/')[1] || (baseUrl ? s.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
-      if (afterStatic) relPath = afterStatic.replace(/^\//, '');
+      if (afterStatic) {
+        relPath = afterStatic.replace(/^\//, '');
+        if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
+      }
       else return s;
     } else if (storage_local_path) {
       relPath = s.replace(/^\//, '');
+      if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
     }
     if (!relPath) return toPublicUrl(s);
     const filePath = path.join(storage_local_path, relPath);
@@ -1597,7 +1652,9 @@ async function callViduVideoApi(config, log, opts) {
   if (hasImage) {
     const rawImgUrl = image_url.trim();
     let publicImgUrl = null;
-    if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
+    if (!allowRemoteReferenceUpload()) {
+      publicImgUrl = resolveImageInputForOmniLocalBase64(rawImgUrl, files_base_url, storage_local_path, log, video_gen_id);
+    } else if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
       log.info('[Vidu] ???? localhost???????', { original: rawImgUrl, video_gen_id });
       publicImgUrl = await uploadLocalImageToProxy(storage_local_path, rawImgUrl, log, `vidu_vg${video_gen_id}`);
       if (publicImgUrl) {
@@ -1610,6 +1667,10 @@ async function callViduVideoApi(config, log, opts) {
       }
     } else {
       publicImgUrl = rawImgUrl;
+    }
+    if (publicImgUrl && !publicImgUrl.startsWith('data:') && !isExternallyReachableHttpUrl(publicImgUrl)) {
+      log.warn('[Vidu] reference image could not be resolved to base64/public URL', { video_gen_id });
+      publicImgUrl = null;
     }
     if (publicImgUrl) body.images = [publicImgUrl];
   }
@@ -1673,6 +1734,14 @@ async function resolveVeo3ImageForApi(rawImgUrl, storage_local_path, log, video_
     }
   } catch (_) {
     /* 非绝对 URL */
+  }
+
+  if (!allowRemoteReferenceUpload()) {
+    const resolved = resolveImageInputForOmniLocalBase64(raw, '', storage_local_path, log, video_gen_id);
+    if (resolved?.startsWith('data:')) return { kind: 'data', value: resolved };
+    if (isExternallyReachableHttpUrl(resolved)) return { kind: 'url', value: normalizeExternalHttpUrl(resolved) };
+    log.warn('[video-ref] local storage mode requires a readable local reference image', { video_gen_id });
+    return null;
   }
 
   if (!raw.startsWith('data:') && storage_local_path) {
@@ -1876,42 +1945,29 @@ async function callSoraVideoApi(config, log, opts) {
       } else {
         log.warn('[Sora] ???? base64 ??????', { video_gen_id });
       }
-    } else if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
-      // localhost URL ? ?????????
-      try {
-        const afterStatic = rawImgUrl.split('/static/')[1];
-        if (afterStatic && storage_local_path) {
-          const localFile = path.join(storage_local_path, afterStatic.replace(/^\//, ''));
-          if (fs.existsSync(localFile)) {
-            imageBuffer = fs.readFileSync(localFile);
-            const ext = path.extname(localFile).toLowerCase();
-            const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
-            imageMime = mimeMap[ext] || 'image/jpeg';
-            imageFilename = path.basename(localFile);
-            log.info('[Sora] ????????', { file: localFile, size_kb: Math.round(imageBuffer.length / 1024), video_gen_id });
-          } else {
-            log.warn('[Sora] ??????????', { file: localFile, video_gen_id });
-          }
-        }
-      } catch (e) {
-        log.warn('[Sora] ?????????', { error: e.message, video_gen_id });
-      }
     } else {
-      // ?? URL ? ??
-      try {
-        const dlRes = await fetch(rawImgUrl);
-        if (dlRes.ok) {
-          const ct = (dlRes.headers.get('content-type') || '').split(';')[0].trim();
-          imageMime = ct || 'image/jpeg';
-          imageBuffer = Buffer.from(await dlRes.arrayBuffer());
-          const ext = imageMime.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
-          imageFilename = `reference.${ext}`;
-          log.info('[Sora] ????????', { url: rawImgUrl, size_kb: Math.round(imageBuffer.length / 1024), video_gen_id });
-        } else {
-          log.warn('[Sora] ?????????', { status: dlRes.status, url: rawImgUrl, video_gen_id });
+      const localRef = readLocalImageReference(rawImgUrl, '', storage_local_path, log, { provider: 'sora', video_gen_id });
+      if (localRef) {
+        imageBuffer = localRef.buffer;
+        imageMime = localRef.mime;
+        imageFilename = localRef.filename;
+        log.info('[Sora] local reference image loaded', { file: localRef.filePath, size_kb: Math.round(imageBuffer.length / 1024), video_gen_id });
+      } else if (/^https?:\/\//i.test(rawImgUrl)) {
+        try {
+          const dlRes = await fetch(rawImgUrl);
+          if (dlRes.ok) {
+            const ct = (dlRes.headers.get('content-type') || '').split(';')[0].trim();
+            imageMime = ct || 'image/jpeg';
+            imageBuffer = Buffer.from(await dlRes.arrayBuffer());
+            const ext = imageMime.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+            imageFilename = `reference.${ext}`;
+            log.info('[Sora] reference image downloaded', { url: rawImgUrl, size_kb: Math.round(imageBuffer.length / 1024), video_gen_id });
+          } else {
+            log.warn('[Sora] reference image download failed', { status: dlRes.status, url: rawImgUrl, video_gen_id });
+          }
+        } catch (e) {
+          log.warn('[Sora] reference image download failed', { error: e.message, video_gen_id });
         }
-      } catch (e) {
-        log.warn('[Sora] ?????????', { error: e.message, video_gen_id });
       }
     }
   }
@@ -2052,6 +2108,10 @@ async function resolveJimengApiImageBuffer(rawUrl, files_base_url, storage_local
     }
     return null;
   }
+  if (storage_local_path && !/^[a-zA-Z]:[\\/]/.test(raw)) {
+    const localRef = readLocalImageReference(raw, files_base_url, storage_local_path, log, { provider: 'jimeng_ai', video_gen_id, index });
+    if (localRef) return { buffer: localRef.buffer, filename: localRef.filename || 'ref_' + index + '.jpg' };
+  }
   if (/localhost|127\.0\.0\.1/i.test(raw) && storage_local_path) {
     const baseUrl = (files_base_url || '').replace(/\/$/, '');
     const afterStatic = raw.split('/static/')[1] || (baseUrl ? raw.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
@@ -2083,7 +2143,7 @@ async function resolveJimengApiImageBuffer(rawUrl, files_base_url, storage_local
     const ab = await res.arrayBuffer();
     return { buffer: Buffer.from(ab), filename: 'ref_' + index + '.jpg' };
   }
-  if (storage_local_path) {
+  if (storage_local_path && allowRemoteReferenceUpload()) {
     const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, 'jimeng_ai_vg' + video_gen_id + '_' + index);
     if (proxyUrl) {
       const res = await fetch(proxyUrl);

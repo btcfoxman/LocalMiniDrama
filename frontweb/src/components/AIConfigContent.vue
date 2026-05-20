@@ -481,7 +481,7 @@ input_reference = (图片文件，可选)</pre>
   "audio": false,
   "watermark": false
 }</pre>
-                  <b>注意：</b>官方 api.vidu.cn 用 <code>Token</code> 认证，中转站用 <code>Bearer</code>，系统自动识别。localhost 图片自动上传图床。
+                  <b>注意：</b>官方 api.vidu.cn 用 <code>Token</code> 认证，中转站用 <code>Bearer</code>，系统自动识别。本地存储模式下参考图会转为 base64 请求。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="jimeng-ai-api-vid">

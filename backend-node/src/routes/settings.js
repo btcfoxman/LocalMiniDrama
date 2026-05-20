@@ -54,14 +54,14 @@ function updateGenerationSettings(db) {
   };
 }
 
-/** GET /settings/storage — 获取 S3 存储配置 */
+/** GET /settings/storage — 获取存储配置 */
 function getStorageSettings(cfg) {
   return (req, res) => {
     response.success(res, settingsService.getStorageSettings(cfg));
   };
 }
 
-/** PUT /settings/storage — 更新 S3 存储配置 */
+/** PUT /settings/storage — 更新存储配置 */
 function updateStorageSettings(cfg, log) {
   return (req, res) => {
     const out = settingsService.updateStorageSettings(cfg, log, req.body || {});
@@ -70,7 +70,7 @@ function updateStorageSettings(cfg, log) {
   };
 }
 
-/** POST /settings/storage/test — 测试 S3 签名上传与删除 */
+/** POST /settings/storage/test — 测试远程存储签名上传与删除 */
 function testStorageSettings(cfg, log) {
   return async (req, res) => {
     const out = await settingsService.testStorageSettings(cfg, log, req.body?.storage || req.body || null);

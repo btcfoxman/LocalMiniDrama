@@ -2,57 +2,80 @@
   <div class="storage-config-panel" v-loading="loading">
     <div class="storage-head">
       <div>
-        <h3>对象存储 S3</h3>
-        <p>图片上传、图片编辑保存、AI 参考图中转会使用这里的 S3 配置。默认使用 s3-3-6，可改成自己的存储空间。</p>
+        <h3>存储设置</h3>
+        <p>本地模式不会上传到云端 S3。模型生成需要参考图时，后端会读取本地文件并转成 base64 随请求提交。</p>
       </div>
       <div class="storage-state">
-        <el-tag :type="form.user_customized ? 'warning' : 'success'" effect="plain">
-          {{ form.user_customized ? '自定义配置' : '默认 s3-3-6' }}
+        <el-tag :type="isS3Mode ? 'warning' : 'success'" effect="plain">
+          {{ isS3Mode ? 'S3 模式' : '本地模式' }}
         </el-tag>
-        <span v-if="isDefaultEndpoint" class="endpoint-pill">s3-3-6</span>
+        <span v-if="form.user_customized" class="state-pill">用户配置</span>
       </div>
     </div>
 
     <el-alert
-      type="info"
+      :type="isS3Mode ? 'warning' : 'info'"
       :closable="false"
       show-icon
       class="storage-alert"
-      title="保存后立即生效；打包版后续升级不会覆盖你保存过的自定义 S3。"
+      :title="isS3Mode
+        ? 'S3 模式会把上传图片、编辑后图片和生成结果同步到你填写的对象存储。'
+        : '打包版默认使用本地存储，S3 配置为空；后续升级不会覆盖你保存过的自定义配置。'"
     />
 
     <el-form label-position="top" class="storage-form">
-      <div class="form-grid">
-        <el-form-item label="Endpoint">
-          <el-input v-model="form.endpoint" placeholder="https://s3-3-6.aiid.edu.kg" />
-        </el-form-item>
-        <el-form-item label="Bucket">
-          <el-input v-model="form.bucket" placeholder="localminidrama" />
-        </el-form-item>
-        <el-form-item label="Region">
-          <el-input v-model="form.region" placeholder="us-east-1" />
-        </el-form-item>
-        <el-form-item label="Access Key ID">
-          <el-input v-model="form.access_key_id" autocomplete="off" />
-        </el-form-item>
-        <el-form-item label="Secret Access Key">
-          <el-input v-model="form.secret_access_key" type="password" show-password autocomplete="new-password" />
-        </el-form-item>
-        <el-form-item label="Cloudflared 签名 Host">
-          <el-input v-model="form.signing_host" placeholder="192.168.3.6:9000，可留空" />
-        </el-form-item>
-        <el-form-item label="公开访问 Base URL" class="span-2">
-          <el-input v-model="form.public_base_url" placeholder="https://s3-3-6.aiid.edu.kg/localminidrama" />
-        </el-form-item>
-        <el-form-item label="兼容 Base URL" class="span-2">
-          <el-input v-model="form.base_url" placeholder="未填时优先使用公开访问 Base URL" />
+      <div class="mode-row">
+        <el-radio-group v-model="form.type" size="large">
+          <el-radio-button label="local">
+            <el-icon><FolderOpened /></el-icon>
+            本地
+          </el-radio-button>
+          <el-radio-button label="s3">
+            <el-icon><Cloudy /></el-icon>
+            S3
+          </el-radio-button>
+        </el-radio-group>
+      </div>
+
+      <div class="form-grid local-grid">
+        <el-form-item label="本地存储目录" class="span-2">
+          <el-input v-model="form.local_path" placeholder="./data/storage-cache" />
         </el-form-item>
       </div>
 
-      <div class="switch-row">
-        <el-switch v-model="form.force_path_style" active-text="Path-style 访问" />
-        <el-switch v-model="form.public_read" active-text="上传对象公开读" />
-      </div>
+      <template v-if="isS3Mode">
+        <div class="form-grid">
+          <el-form-item label="Endpoint">
+            <el-input v-model="form.endpoint" placeholder="https://your-s3.example.com" />
+          </el-form-item>
+          <el-form-item label="Bucket">
+            <el-input v-model="form.bucket" placeholder="bucket-name" />
+          </el-form-item>
+          <el-form-item label="Region">
+            <el-input v-model="form.region" placeholder="us-east-1" />
+          </el-form-item>
+          <el-form-item label="Access Key ID">
+            <el-input v-model="form.access_key_id" autocomplete="off" />
+          </el-form-item>
+          <el-form-item label="Secret Access Key">
+            <el-input v-model="form.secret_access_key" type="password" show-password autocomplete="new-password" />
+          </el-form-item>
+          <el-form-item label="签名 Host">
+            <el-input v-model="form.signing_host" placeholder="可留空；Cloudflared/RustFS 场景可填内网 Host" />
+          </el-form-item>
+          <el-form-item label="公开访问 Base URL" class="span-2">
+            <el-input v-model="form.public_base_url" placeholder="https://cdn.example.com/bucket" />
+          </el-form-item>
+          <el-form-item label="兼容 Base URL" class="span-2">
+            <el-input v-model="form.base_url" placeholder="未填时优先使用公开访问 Base URL" />
+          </el-form-item>
+        </div>
+
+        <div class="switch-row">
+          <el-switch v-model="form.force_path_style" active-text="Path-style 访问" />
+          <el-switch v-model="form.public_read" active-text="上传对象公开读" />
+        </div>
+      </template>
 
       <div class="preview-line">
         <span>URL 预览</span>
@@ -64,13 +87,13 @@
           <el-icon><Check /></el-icon>
           保存
         </el-button>
-        <el-button plain :loading="testing" @click="test">
+        <el-button v-if="isS3Mode" plain :loading="testing" @click="test">
           <el-icon><Connection /></el-icon>
           测试上传
         </el-button>
-        <el-button plain @click="fillDefault36">
+        <el-button plain @click="resetLocalMode">
           <el-icon><RefreshLeft /></el-icon>
-          填入 s3-3-6
+          恢复本地模式
         </el-button>
       </div>
     </el-form>
@@ -80,34 +103,33 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, Connection, RefreshLeft } from '@element-plus/icons-vue'
+import { Check, Cloudy, Connection, FolderOpened, RefreshLeft } from '@element-plus/icons-vue'
 import { storageSettingsAPI } from '@/api/settings'
 
-const DEFAULT_36 = Object.freeze({
-  type: 's3',
+const LOCAL_DEFAULT = Object.freeze({
+  type: 'local',
   local_path: './data/storage-cache',
-  base_url: 'https://s3-3-6.aiid.edu.kg/localminidrama',
-  public_base_url: 'https://s3-3-6.aiid.edu.kg/localminidrama',
-  endpoint: 'https://s3-3-6.aiid.edu.kg',
-  bucket: 'localminidrama',
+  base_url: '',
+  public_base_url: '',
+  endpoint: '',
+  bucket: '',
   region: 'us-east-1',
   force_path_style: true,
-  signing_host: '192.168.3.6:9000',
-  public_read: true,
+  signing_host: '',
+  public_read: false,
+  access_key_id: '',
+  secret_access_key: '',
   user_customized: false,
 })
 
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
-const form = reactive({
-  ...DEFAULT_36,
-  access_key_id: '',
-  secret_access_key: '',
-})
+const form = reactive({ ...LOCAL_DEFAULT })
 
-const isDefaultEndpoint = computed(() => /s3-3-6\.aiid\.edu\.kg/i.test(form.endpoint || ''))
+const isS3Mode = computed(() => form.type === 's3')
 const publicPreview = computed(() => {
+  if (!isS3Mode.value) return '/static/example.png'
   const base = (form.public_base_url || form.base_url || '').replace(/\/$/, '')
   if (base) return `${base}/example.png`
   const endpoint = (form.endpoint || '').replace(/\/$/, '')
@@ -115,26 +137,35 @@ const publicPreview = computed(() => {
 })
 
 function applyStorage(storage = {}) {
+  const type = String(storage.type || 'local').toLowerCase() === 's3' ? 's3' : 'local'
   Object.assign(form, {
-    ...DEFAULT_36,
-    access_key_id: '',
-    secret_access_key: '',
+    ...LOCAL_DEFAULT,
     ...storage,
+    type,
+    local_path: storage.local_path || LOCAL_DEFAULT.local_path,
+    region: storage.region || LOCAL_DEFAULT.region,
     force_path_style: storage.force_path_style !== false,
-    public_read: storage.public_read !== false,
+    public_read: type === 's3' ? storage.public_read !== false : false,
     user_customized: !!storage.user_customized,
   })
 }
 
 function normalizePayload() {
+  if (!isS3Mode.value) {
+    return {
+      ...LOCAL_DEFAULT,
+      type: 'local',
+      local_path: String(form.local_path || LOCAL_DEFAULT.local_path).trim() || LOCAL_DEFAULT.local_path,
+    }
+  }
   return {
     type: 's3',
-    local_path: form.local_path || './data/storage-cache',
+    local_path: String(form.local_path || LOCAL_DEFAULT.local_path).trim() || LOCAL_DEFAULT.local_path,
     base_url: String(form.base_url || '').trim(),
     public_base_url: String(form.public_base_url || '').trim(),
     endpoint: String(form.endpoint || '').trim(),
     bucket: String(form.bucket || '').trim(),
-    region: String(form.region || '').trim() || 'us-east-1',
+    region: String(form.region || '').trim() || LOCAL_DEFAULT.region,
     force_path_style: !!form.force_path_style,
     signing_host: String(form.signing_host || '').trim(),
     public_read: !!form.public_read,
@@ -144,6 +175,7 @@ function normalizePayload() {
 }
 
 function validatePayload(payload) {
+  if (payload.type !== 's3') return ''
   if (!payload.endpoint) return '请填写 S3 Endpoint'
   if (!/^https?:\/\//i.test(payload.endpoint)) return 'Endpoint 必须以 http:// 或 https:// 开头'
   if (!payload.bucket) return '请填写 Bucket'
@@ -173,7 +205,7 @@ async function save() {
   try {
     const res = await storageSettingsAPI.update(payload)
     applyStorage(res?.storage || payload)
-    ElMessage.success('S3 配置已保存')
+    ElMessage.success(payload.type === 's3' ? 'S3 配置已保存' : '本地存储已启用')
   } finally {
     saving.value = false
   }
@@ -195,11 +227,9 @@ async function test() {
   }
 }
 
-function fillDefault36() {
-  const accessKey = form.access_key_id
-  const secretKey = form.secret_access_key
-  applyStorage({ ...DEFAULT_36, access_key_id: accessKey, secret_access_key: secretKey })
-  ElMessage.info('已填入 s3-3-6 默认地址，密钥保持当前输入')
+function resetLocalMode() {
+  applyStorage({ ...LOCAL_DEFAULT, local_path: form.local_path || LOCAL_DEFAULT.local_path })
+  ElMessage.info('已切换为本地模式，保存后生效')
 }
 
 onMounted(loadStorageSettings)
@@ -234,8 +264,8 @@ onMounted(loadStorageSettings)
   gap: 8px;
   flex-shrink: 0;
 }
-.endpoint-pill {
-  border: 1px solid rgba(64, 158, 255, 0.28);
+.state-pill {
+  border: 1px solid rgba(64, 158, 255, 0.26);
   background: rgba(64, 158, 255, 0.08);
   color: #2b7ecb;
   border-radius: 999px;
@@ -251,11 +281,24 @@ onMounted(loadStorageSettings)
   padding: 18px;
   background: var(--el-fill-color-blank);
 }
+.mode-row {
+  margin-bottom: 16px;
+}
+.mode-row :deep(.el-radio-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 92px;
+  justify-content: center;
+}
 .form-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   column-gap: 14px;
   row-gap: 2px;
+}
+.local-grid {
+  margin-bottom: 2px;
 }
 .span-2 {
   grid-column: span 2;
@@ -289,7 +332,7 @@ onMounted(loadStorageSettings)
 .storage-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   margin-top: 16px;
 }

@@ -60,17 +60,49 @@ function boolValue(value, defaultValue) {
   return defaultValue;
 }
 
+const LOCAL_STORAGE_DEFAULTS = Object.freeze({
+  type: 'local',
+  local_path: './data/storage-cache',
+  base_url: '',
+  public_base_url: '',
+  endpoint: '',
+  bucket: '',
+  region: 'us-east-1',
+  force_path_style: true,
+  signing_host: '',
+  public_read: false,
+  access_key_id: '',
+  secret_access_key: '',
+  user_customized: false,
+});
+
+function normalizeStorageType(value) {
+  return String(value || 'local').trim().toLowerCase() === 's3' ? 's3' : 'local';
+}
+
 function normalizeStorageSettings(input, current = {}) {
   const source = input || {};
-  const type = trimValue(source.type || current.type || 's3').toLowerCase();
+  const type = normalizeStorageType(source.type || current.type || 'local');
   const get = (key, fallback = '') => {
     if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
     return current[key] !== undefined ? current[key] : fallback;
   };
 
+  if (type === 'local') {
+    return {
+      ok: true,
+      storage: {
+        ...LOCAL_STORAGE_DEFAULTS,
+        local_path: trimValue(get('local_path', LOCAL_STORAGE_DEFAULTS.local_path)) || LOCAL_STORAGE_DEFAULTS.local_path,
+        user_customized: boolValue(get('user_customized', LOCAL_STORAGE_DEFAULTS.user_customized), LOCAL_STORAGE_DEFAULTS.user_customized),
+      },
+    };
+  }
+
   const next = {
-    type,
-    local_path: trimValue(get('local_path', './data/storage-cache')) || './data/storage-cache',
+    ...LOCAL_STORAGE_DEFAULTS,
+    type: 's3',
+    local_path: trimValue(get('local_path', LOCAL_STORAGE_DEFAULTS.local_path)) || LOCAL_STORAGE_DEFAULTS.local_path,
     base_url: trimValue(get('base_url')),
     public_base_url: trimValue(get('public_base_url')),
     endpoint: trimValue(get('endpoint')),
@@ -84,9 +116,6 @@ function normalizeStorageSettings(input, current = {}) {
     user_customized: boolValue(get('user_customized', true), true),
   };
 
-  if (type !== 's3') {
-    return { ok: false, error: 'storage.type currently only supports s3' };
-  }
   if (!next.endpoint) return { ok: false, error: 'S3 endpoint is required' };
   if (!/^https?:\/\//i.test(next.endpoint)) return { ok: false, error: 'S3 endpoint must start with http:// or https://' };
   if (!next.bucket) return { ok: false, error: 'S3 bucket is required' };
@@ -97,17 +126,13 @@ function normalizeStorageSettings(input, current = {}) {
 
 function getStorageSettings(cfg) {
   const storage = {
-    type: 's3',
-    local_path: './data/storage-cache',
-    region: 'us-east-1',
-    force_path_style: true,
-    public_read: true,
-    user_customized: false,
+    ...LOCAL_STORAGE_DEFAULTS,
     ...(cfg?.storage || {}),
   };
+  storage.type = normalizeStorageType(storage.type);
   return {
     storage,
-    public_url_preview: objectStorage.publicUrlForKey(storage, 'example.png'),
+    public_url_preview: storage.type === 's3' ? objectStorage.publicUrlForKey(storage, 'example.png') : '/static/example.png',
   };
 }
 
@@ -126,15 +151,13 @@ function updateStorageSettings(cfg, log, input) {
     log?.warn?.('Failed to write storage config', { error: err.message });
     return { ok: false, error: 'Failed to write config file: ' + err.message };
   }
-  log?.info?.('Storage config updated', {
-    endpoint: storage.endpoint,
-    bucket: storage.bucket,
-    signing_host: storage.signing_host || '',
-  });
+  log?.info?.('Storage config updated', storage.type === 's3'
+    ? { type: storage.type, endpoint: storage.endpoint, bucket: storage.bucket, signing_host: storage.signing_host || '' }
+    : { type: storage.type, local_path: storage.local_path });
   return {
     ok: true,
     storage,
-    public_url_preview: objectStorage.publicUrlForKey(storage, 'example.png'),
+    public_url_preview: storage.type === 's3' ? objectStorage.publicUrlForKey(storage, 'example.png') : '/static/example.png',
   };
 }
 
@@ -142,6 +165,15 @@ async function testStorageSettings(cfg, log, input) {
   const normalized = normalizeStorageSettings(input || cfg?.storage || {}, cfg?.storage || {});
   if (!normalized.ok) return normalized;
   const storage = normalized.storage;
+  if (storage.type !== 's3') {
+    return {
+      ok: true,
+      type: 'local',
+      message: 'Local storage mode does not upload test objects',
+      url: '/static/example.png',
+      deleted: false,
+    };
+  }
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const key = `diagnostics/storage-test-${suffix}.txt`;
   const body = Buffer.from(`LocalMiniDrama storage test ${new Date().toISOString()}\n`, 'utf8');

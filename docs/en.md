@@ -4,7 +4,7 @@
 
 **A locally-running AI short drama & comic generator — download and run, no cloud required, fully open source**
 
-[![version](https://img.shields.io/badge/version-1.2.10-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.11-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](../LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -182,7 +182,11 @@ LocalMiniDrama/
 
 Full version history → **[CHANGELOG](changelog.md)**
 
-**Latest v1.2.10 highlights:**
+**Latest v1.2.11 highlights:**
+- 🔧 **Packaged app defaults to local storage** — bundled storage config is now local/empty instead of prefilled 3.6 S3
+- 🔧 **Local references are sent as base64** — in local mode, model requests read local reference images and send them as base64 or multipart payloads instead of uploading to S3 or an image proxy
+
+**v1.2.10 highlights:**
 - 🆕 **Custom S3 storage** — the AI Config panel now includes Storage Settings for Endpoint, Bucket, AK/SK, public Base URL, Cloudflared signing Host, and a signed-upload test
 - 🔧 **Tighter resource-image buttons** — the AI Generate / Upload / Edit controls use smaller spacing so the new Edit button remains visible
 

@@ -773,10 +773,14 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
     const afterStatic = s.split('/static/')[1]
       || (baseUrl ? s.replace(baseUrl + '/', '').replace(baseUrl, '') : null)
       || s.replace(/^https?:\/\/[^/]+\//, '');
-    if (afterStatic) relPath = afterStatic.replace(/^\//, '');
+    if (afterStatic) {
+      relPath = afterStatic.replace(/^\//, '');
+      if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
+    }
     else return s;
   } else if (storageLocalPath) {
     relPath = s.replace(/^\//, '');
+    if (relPath.toLowerCase().startsWith('static/')) relPath = relPath.slice(7);
   }
   if (!relPath) return toPublicUrl(s);
   const filePath = path.join(storageLocalPath, relPath);
@@ -892,7 +896,11 @@ function stripKnownBaseUrl(rawUrl, baseUrl) {
 function relativePathFromImageRef(value, filesBaseUrl, storage) {
   const raw = String(value || '').trim();
   if (!raw || isDataImageUrl(raw)) return null;
-  if (!isHttpUrl(raw)) return objectStorage.normalizeKey(raw);
+  if (!isHttpUrl(raw)) {
+    let rel = raw.replace(/^\/+/, '');
+    if (rel.toLowerCase().startsWith('static/')) rel = rel.slice(7);
+    return objectStorage.normalizeKey(rel);
+  }
 
   const configuredBases = [
     filesBaseUrl,
@@ -1276,7 +1284,8 @@ async function callGeminiImageApi(db, config, log, opts) {
   // image_proxy.use_for_gemini = false（默认）→ 直接 inlineData base64
   // image_proxy.use_for_gemini = true          → 上传图床后用 fileData.fileUri
   const globalCfg = (() => { try { return require('../config').loadConfig(); } catch (_) { return {}; } })();
-  const useImageProxy = !!(globalCfg?.image_proxy?.use_for_gemini);
+  const storageType = String(globalCfg?.storage?.type || 'local').toLowerCase();
+  const useImageProxy = storageType === 's3' && !!(globalCfg?.image_proxy?.use_for_gemini);
   log.info('[Gemini图生] 参考图传输方式', { image_gen_id, use_image_proxy: useImageProxy });
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];

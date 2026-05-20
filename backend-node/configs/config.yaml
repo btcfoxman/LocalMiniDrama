@@ -18,19 +18,19 @@ database:
   max_idle: 10
   max_open: 100
 storage:
-  type: s3
+  type: local
   user_customized: false
   local_path: ./data/storage-cache
-  base_url: https://s3-3-6.aiid.edu.kg/localminidrama
-  public_base_url: https://s3-3-6.aiid.edu.kg/localminidrama
-  endpoint: https://s3-3-6.aiid.edu.kg
-  bucket: localminidrama
+  base_url: ''
+  public_base_url: ''
+  endpoint: ''
+  bucket: ''
   region: us-east-1
   force_path_style: true
-  signing_host: 192.168.3.6:9000
-  public_read: true
-  access_key_id: btcfoxmanadmin
-  secret_access_key: 1pRGaDJdIUtLL0mRLCihQVGIOJfK27Jy
+  signing_host: ''
+  public_read: false
+  access_key_id: ''
+  secret_access_key: ''
 ai:
   default_text_provider: openai
   default_image_provider: openai

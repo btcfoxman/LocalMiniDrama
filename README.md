@@ -6,7 +6,7 @@
 
 *OverseasDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.10-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.11-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -239,7 +239,11 @@ LocalMiniDrama/
 
 查看完整更新记录 → **[CHANGELOG](docs/changelog.md)**
 
-**最新版 v1.2.10 亮点：**
+**最新版 v1.2.11 亮点：**
+- 🔧 **打包版默认本地存储**：内置存储配置改为本地模式，不再预填 3.6 S3；上传、编辑保存和生成结果默认保存在本机
+- 🔧 **参考图 base64 请求**：本地模式下调用模型时自动读取本地参考图并转成 base64 或 multipart 请求，不再上传 S3 或外部图床
+
+**v1.2.10 亮点：**
 - 🆕 **自定义 S3 存储**：AI 配置面板新增「存储设置」，可自行填写 Endpoint、Bucket、AK/SK、公开 Base URL 与 Cloudflared 签名 Host，并一键测试签名上传
 - 🔧 **资源图片按钮更紧凑**：「AI 生成 / 上传 / 编辑」按钮间距缩小，编辑按钮在资源卡片底部更容易看到
 
