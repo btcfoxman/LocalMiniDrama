@@ -19,6 +19,7 @@ function getClient(storage) {
     region: storage.region,
     access_key_id: storage.access_key_id,
     force_path_style: storage.force_path_style,
+    signing_host: storage.signing_host,
   });
   if (clientCache && clientCache.signature === signature) return clientCache.client;
 
@@ -32,9 +33,54 @@ function getClient(storage) {
       secretAccessKey: storage.secret_access_key || storage.secretAccessKey || '',
     },
   });
+  configureSigningHostRewrite(client, storage);
   clientCache = { signature, client };
   bucketEnsured = false;
   return client;
+}
+
+function endpointHost(storage) {
+  try {
+    return new URL(storage.endpoint).host;
+  } catch (_) {
+    return '';
+  }
+}
+
+function configureSigningHostRewrite(client, storage) {
+  const signingHost = String(storage?.signing_host || storage?.signingHost || '').trim();
+  const publicHost = endpointHost(storage);
+  if (!signingHost || !publicHost || signingHost === publicHost) return;
+
+  const { HttpRequest } = require('@smithy/protocol-http');
+  client.middlewareStack.addRelativeTo(
+    (next) => async (args) => {
+      if (HttpRequest.isInstance(args.request)) {
+        args.request.headers.host = signingHost;
+      }
+      return next(args);
+    },
+    {
+      name: 'cloudflaredSigningHostBeforeAuth',
+      relation: 'before',
+      toMiddleware: 'awsAuthMiddleware',
+      override: true,
+    }
+  );
+  client.middlewareStack.addRelativeTo(
+    (next) => async (args) => {
+      if (HttpRequest.isInstance(args.request)) {
+        args.request.headers.host = publicHost;
+      }
+      return next(args);
+    },
+    {
+      name: 'cloudflaredSigningHostAfterAuth',
+      relation: 'after',
+      toMiddleware: 'awsAuthMiddleware',
+      override: true,
+    }
+  );
 }
 
 function publicUrlForKey(storage, key) {

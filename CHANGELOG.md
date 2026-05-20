@@ -8,6 +8,19 @@
 
 ---
 
+## [1.2.8] - 2026-05-20
+
+### 修复
+
+- **公网 S3 签名上传**：桌面端 S3 改为 `https://s3-3-6.aiid.edu.kg`，新增 `storage.signing_host` 兼容 3.6 Cloudflared 将 `Host` 转发为 `192.168.3.6:9000` 的部署方式，解决 `SignatureDoesNotMatch`
+- **已安装用户 S3 配置同步**：桌面端启动时同步内置 `storage` 配置，避免旧安装继续沿用局域网 endpoint
+
+### 发布
+
+- `frontweb` / `backend-node` / `desktop` 的 `package.json` 与各自 `package-lock.json` 顶层 **version** 统一为 **1.2.8**
+
+---
+
 ## [1.2.7] - 2026-05-20
 
 ### 修复

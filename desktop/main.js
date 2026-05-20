@@ -87,17 +87,24 @@ function ensureBackendCwd(backendCwd) {
 
   // 每次启动时，将内置 config.yaml 中的 vendor_lock 节强制同步到用户 config.yaml，
   // 确保打包时配置的锁定策略对所有用户生效，不受首次安装后遗留旧配置影响。
+  // Also sync storage so upgraded installs do not keep stale LAN S3 endpoints.
   if (fs.existsSync(bundledConfig) && fs.existsSync(configPath)) {
     try {
       const yaml = require('js-yaml');
       const userCfg = yaml.load(fs.readFileSync(configPath, 'utf8')) || {};
       const bundledCfg = yaml.load(fs.readFileSync(bundledConfig, 'utf8')) || {};
-      if (bundledCfg.vendor_lock !== undefined) {
-        userCfg.vendor_lock = bundledCfg.vendor_lock;
+      let changed = false;
+      for (const section of ['vendor_lock', 'storage']) {
+        if (bundledCfg[section] !== undefined) {
+          userCfg[section] = bundledCfg[section];
+          changed = true;
+        }
+      }
+      if (changed) {
         fs.writeFileSync(configPath, yaml.dump(userCfg, { lineWidth: -1 }), 'utf8');
       }
     } catch (e) {
-      console.warn('[config] Failed to sync vendor_lock from bundled config:', e.message);
+      console.warn('[config] Failed to sync bundled config sections:', e.message);
     }
   }
 }

@@ -6,7 +6,7 @@
 
 *OverseasDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.7-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -239,7 +239,11 @@ LocalMiniDrama/
 
 查看完整更新记录 → **[CHANGELOG](docs/changelog.md)**
 
-**最新版 v1.2.7 亮点：**
+**最新版 v1.2.8 亮点：**
+- 🔧 **公网 S3 签名上传打通**：桌面端 S3 改用 `https://s3-3-6.aiid.edu.kg`，兼容 3.6 Cloudflared 将 `Host` 转发为 `192.168.3.6:9000` 的部署方式
+- 🔧 **已安装用户 S3 配置同步**：新版 exe 启动时会同步内置 `storage` 配置，避免旧安装继续使用局域网 endpoint
+
+**v1.2.7 亮点：**
 - 🔧 **桌面 exe 视频同步不卡顿**：远端视频同步改为流式落盘，ffmpeg 后处理改为异步子进程，降低生成完成后界面假死风险
 - 🔧 **大视频本地保存优化**：减少整文件重复读写与内存峰值，S3 上传改用文件流
 
