@@ -76,6 +76,6 @@ jobs:
         with:
           files: desktop/release/*.exe
           generate_release_notes: true
-          draft: true   # 先创建草稿，人工审核后手动发布
+          draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
