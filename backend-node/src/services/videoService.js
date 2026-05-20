@@ -67,13 +67,17 @@ function getById(db, id) {
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const uploadService = require('./uploadService');
-const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+const { getFfmpegPath } = require('../utils/ffmpegPath');
+
+const fsp = fs.promises;
 
 /** @returns {{ dir: string, relPrefix: string }} 与图片 uploads 一致的工程子目录规则 */
 function resolveVideosDir(storagePath, projectSubdir) {
@@ -98,6 +102,17 @@ function downloadedVideoLooksInvalid(buffer, contentType) {
   return '';
 }
 
+async function readFileHead(filePath, length = 512) {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * 将远程 video_url 下载到本地
  * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
@@ -105,11 +120,12 @@ function downloadedVideoLooksInvalid(buffer, contentType) {
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
   if (!videoUrl || typeof videoUrl !== 'string') return null;
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
+  let filePath = '';
   try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    await fsp.mkdir(dir, { recursive: true });
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
-    const filePath = path.join(dir, name);
+    filePath = path.join(dir, name);
     const res = await fetch(videoUrl, {
       method: 'GET',
       headers: {
@@ -121,23 +137,37 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
       log.warn('Download video failed', { status: res.status, videoGenId });
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    const invalidReason = downloadedVideoLooksInvalid(buf, res.headers.get('content-type'));
+    if (res.body && typeof Readable.fromWeb === 'function') {
+      await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(filePath));
+    } else {
+      const buf = Buffer.from(await res.arrayBuffer());
+      await fsp.writeFile(filePath, buf);
+    }
+    const stat = await fsp.stat(filePath);
+    const headBuf = stat.size > 0 ? await readFileHead(filePath) : Buffer.alloc(0);
+    const invalidReason = downloadedVideoLooksInvalid(headBuf, res.headers.get('content-type'));
     if (invalidReason) {
       log.warn('Download video returned non-video content', {
         videoGenId,
         reason: invalidReason,
         content_type: res.headers.get('content-type') || '',
-        bytes: buf.length,
+        bytes: stat.size,
         url_head: videoUrl.slice(0, 160),
       });
+      try {
+        await fsp.unlink(filePath);
+      } catch (_) {}
       return null;
     }
-    fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return relativePath;
   } catch (e) {
+    if (filePath) {
+      try {
+        await fsp.unlink(filePath);
+      } catch (_) {}
+    }
     log.warn('Download video error', { videoGenId, error: e.message });
     return null;
   }
@@ -178,19 +208,41 @@ function targetVideoPixelsForAspect(aspectRatio) {
 /**
  * 用 ffmpeg 将视频缩放并加黑边到固定分辨率，避免 Grok 等返回实际像素不一致导致连播时画面跳动。
  */
-function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
+function runProcessAsync(bin, args, log, videoGenId) {
+  return new Promise((resolve) => {
+    let stderr = '';
+    let settled = false;
+    const child = spawn(bin, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 16000) stderr = stderr.slice(-16000);
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      log.warn('[video] ffmpeg start failed', { videoGenId, error: err.message });
+      resolve({ status: -1, stderr: err.message });
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: code, stderr });
+    });
+  });
+}
+
+async function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
   if (!absPath || !tw || !th || !fs.existsSync(absPath)) return false;
-  if (!hasLocalFfmpeg()) {
-    log.info('[视频] 未找到 ffmpeg，跳过画幅归一化', { videoGenId });
-    return false;
-  }
   const ffmpeg = getFfmpegPath();
   const vf = `scale=${tw}:${th}:force_original_aspect_ratio=decrease,pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:black`;
   const tmpOut = absPath + '.norm-' + randomUUID().slice(0, 8) + (path.extname(absPath) || '.mp4');
   const baseArgs = ['-y', '-i', absPath, '-vf', vf, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
-  let r = spawnSync(ffmpeg, [...baseArgs, '-c:a', 'copy', tmpOut], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  let r = await runProcessAsync(ffmpeg, [...baseArgs, '-c:a', 'copy', tmpOut], log, videoGenId);
   if (r.status !== 0) {
-    r = spawnSync(ffmpeg, [...baseArgs, '-an', tmpOut], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    r = await runProcessAsync(ffmpeg, [...baseArgs, '-an', tmpOut], log, videoGenId);
   }
   if (r.status !== 0) {
     log.warn('[视频] 画幅归一化失败（保留原文件）', {
@@ -198,29 +250,29 @@ function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
       stderr: (r.stderr || '').slice(-500),
     });
     try {
-      fs.unlinkSync(tmpOut);
+      await fsp.unlink(tmpOut);
     } catch (_) {}
     return false;
   }
   try {
-    fs.unlinkSync(absPath);
-    fs.renameSync(tmpOut, absPath);
+    await fsp.unlink(absPath);
+    await fsp.rename(tmpOut, absPath);
     log.info('[视频] 已统一画幅尺寸', { videoGenId, w: tw, h: th });
     return true;
   } catch (e) {
     log.warn('[视频] 替换归一化文件失败', { videoGenId, error: e.message });
     try {
-      fs.unlinkSync(tmpOut);
+      await fsp.unlink(tmpOut);
     } catch (_) {}
     return false;
   }
 }
 
-function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenId, log) {
+async function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenId, log) {
   if (!localPath) return;
   const abs = path.join(storagePath, localPath);
   const dim = targetVideoPixelsForAspect(row.aspect_ratio);
-  normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
+  await normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
 }
 
 async function processVideoGeneration(db, log, videoGenId) {
@@ -318,7 +370,7 @@ async function processVideoGeneration(db, log, videoGenId) {
           : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
         localPath = await downloadVideoToLocal(storagePath, result.video_url, videoGenId, log, projectSubdir);
-        maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+        await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
         if (localPath) {
           finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
             || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
@@ -368,7 +420,7 @@ async function processVideoGeneration(db, log, videoGenId) {
             : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
           const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
           localPath = await downloadVideoToLocal(storagePath, pollResult.video_url, videoGenId, log, projectSubdir);
-          maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+          await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
           if (localPath) {
             finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
               || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')

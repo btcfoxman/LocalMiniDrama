@@ -106,6 +106,21 @@ async function uploadBuffer(storage, key, buffer, mimeType, log) {
   return publicUrlForKey(storage, cleanKey);
 }
 
+async function uploadFile(storage, key, filePath, mimeType, log) {
+  if (!isS3Storage(storage)) return '';
+  const { PutObjectCommand } = require('@aws-sdk/client-s3');
+  const cleanKey = normalizeKey(key);
+  await ensureBucket(storage, log);
+  const client = getClient(storage);
+  await client.send(new PutObjectCommand({
+    Bucket: storage.bucket,
+    Key: cleanKey,
+    Body: fs.createReadStream(filePath),
+    ContentType: mimeType || 'application/octet-stream',
+  }));
+  return publicUrlForKey(storage, cleanKey);
+}
+
 async function downloadToFile(storage, key, destPath, log) {
   if (!isS3Storage(storage)) return false;
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
@@ -151,6 +166,7 @@ module.exports = {
   normalizeKey,
   publicUrlForKey,
   uploadBuffer,
+  uploadFile,
   downloadToFile,
   keyFromPublicUrl,
   ensureBucket,

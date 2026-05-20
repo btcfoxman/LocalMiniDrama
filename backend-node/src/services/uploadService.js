@@ -6,6 +6,8 @@ const http = require('http');
 const { randomUUID } = require('crypto');
 const objectStorage = require('./objectStorageService');
 
+const fsp = fs.promises;
+
 function loadStorageConfig() {
   try {
     const { loadConfig } = require('../config');
@@ -89,8 +91,8 @@ function resolveCategoryPaths(storagePath, category, projectSubdir) {
 async function saveBufferToStorage(storagePath, relativePath, buffer, mimeType, log) {
   const cleanPath = objectStorage.normalizeKey(relativePath);
   const filePath = path.join(storagePath, cleanPath);
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, buffer);
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, buffer);
   const storage = loadStorageConfig();
   if (objectStorage.isS3Storage(storage)) {
     return objectStorage.uploadBuffer(storage, cleanPath, buffer, mimeType, log);
@@ -101,9 +103,16 @@ async function saveBufferToStorage(storagePath, relativePath, buffer, mimeType, 
 async function uploadLocalPathToStorage(storagePath, relativePath, mimeType, log) {
   const cleanPath = objectStorage.normalizeKey(relativePath);
   const filePath = path.join(storagePath, cleanPath);
-  if (!fs.existsSync(filePath)) return null;
-  const buffer = fs.readFileSync(filePath);
-  return saveBufferToStorage(storagePath, cleanPath, buffer, mimeType, log);
+  try {
+    await fsp.access(filePath, fs.constants.R_OK);
+  } catch (_) {
+    return null;
+  }
+  const storage = loadStorageConfig();
+  if (objectStorage.isS3Storage(storage)) {
+    return objectStorage.uploadFile(storage, cleanPath, filePath, mimeType, log);
+  }
+  return buildPublicUrl(cleanPath, storage.base_url || '');
 }
 
 async function ensureLocalFile(storagePath, relativePath, log) {
