@@ -1,10 +1,10 @@
 # 出海短剧工厂 / OverseasDrama 桌面客户端
 
-基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.9**
+基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.10**
 
 ---
 
-## 主要功能（v1.2.9）
+## 主要功能（v1.2.10）
 
 | 模块 | 功能 |
 |------|------|
@@ -16,6 +16,7 @@
 | 一键流水线 | **一键生成视频**：全流程自动执行；**补全并生成**：仅生成缺失内容，自动跳过已有 |
 | 图片/视频生成 | 支持 DashScope、Volcengine、Gemini 等多种 API；生成失败自动重试 3 次；错误信息持久显示 |
 | 合成视频 | 将所有分镜视频合成为完整剧集 |
+| 存储设置 | 默认使用 3.6 S3，也可在 AI 配置中自定义 Endpoint、Bucket、AK/SK、公开 Base URL 与 Cloudflared 签名 Host |
 | 主题 | 支持暗色模式（默认）与浅色模式，偏好持久保存 |
 
 ---
@@ -96,7 +97,7 @@ npm run dist:cn
 ### 2. 从命令行运行（实时日志）
 
 ```powershell
-& "D:\path\to\release\OverseasDrama-1.2.9.exe"
+& "D:\path\to\release\OverseasDrama-1.2.10.exe"
 ```
 
 日志会直接打印在终端，操作软件时可实时看到所有输出。
@@ -105,7 +106,7 @@ npm run dist:cn
 
 ```powershell
 $env:OVERSEASDRAMA_DEVTOOLS=1
-& "D:\path\to\release\OverseasDrama-1.2.9.exe"
+& "D:\path\to\release\OverseasDrama-1.2.10.exe"
 ```
 
 在 Network 面板查看各 API 请求（如 `POST /api/v1/generation/characters`）是否正常发出和返回。

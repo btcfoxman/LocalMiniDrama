@@ -17,7 +17,9 @@ function getClient(storage) {
   const signature = JSON.stringify({
     endpoint: storage.endpoint,
     region: storage.region,
+    bucket: storage.bucket,
     access_key_id: storage.access_key_id,
+    secret_access_key: storage.secret_access_key || storage.secretAccessKey || '',
     force_path_style: storage.force_path_style,
     signing_host: storage.signing_host,
   });
@@ -187,6 +189,20 @@ async function downloadToFile(storage, key, destPath, log) {
   return true;
 }
 
+async function deleteObject(storage, key, log) {
+  if (!isS3Storage(storage)) return false;
+  const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
+  const cleanKey = normalizeKey(key);
+  if (!cleanKey) return false;
+  const client = getClient(storage);
+  await client.send(new DeleteObjectCommand({
+    Bucket: storage.bucket,
+    Key: cleanKey,
+  }));
+  log?.info?.('[storage] S3 object deleted', { key: cleanKey });
+  return true;
+}
+
 function keyFromPublicUrl(storage, rawUrl) {
   const raw = String(rawUrl || '').trim();
   if (!raw || !isS3Storage(storage)) return null;
@@ -214,6 +230,7 @@ module.exports = {
   uploadBuffer,
   uploadFile,
   downloadToFile,
+  deleteObject,
   keyFromPublicUrl,
   ensureBucket,
 };

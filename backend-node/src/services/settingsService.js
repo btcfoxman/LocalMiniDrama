@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const objectStorage = require('./objectStorageService');
 
 let configPath = null;
 let configCache = null;
@@ -21,6 +22,141 @@ function setConfigPath(cfg) {
 
 function getLanguage(cfg) {
   return cfg?.app?.language || 'zh';
+}
+
+function getConfigPath() {
+  if (configPath && fs.existsSync(configPath)) return configPath;
+  return setConfigPath();
+}
+
+function readYamlConfig() {
+  const p = getConfigPath();
+  if (!p) return {};
+  try {
+    return yaml.load(fs.readFileSync(p, 'utf8')) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeYamlConfig(config) {
+  const p = getConfigPath();
+  if (!p) return false;
+  fs.writeFileSync(p, yaml.dump(config, { lineWidth: -1 }), 'utf8');
+  return true;
+}
+
+function trimValue(value) {
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function boolValue(value, defaultValue) {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const s = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'off'].includes(s)) return false;
+  return defaultValue;
+}
+
+function normalizeStorageSettings(input, current = {}) {
+  const source = input || {};
+  const type = trimValue(source.type || current.type || 's3').toLowerCase();
+  const get = (key, fallback = '') => {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+    return current[key] !== undefined ? current[key] : fallback;
+  };
+
+  const next = {
+    type,
+    local_path: trimValue(get('local_path', './data/storage-cache')) || './data/storage-cache',
+    base_url: trimValue(get('base_url')),
+    public_base_url: trimValue(get('public_base_url')),
+    endpoint: trimValue(get('endpoint')),
+    bucket: trimValue(get('bucket')),
+    region: trimValue(get('region', 'us-east-1')) || 'us-east-1',
+    force_path_style: boolValue(get('force_path_style', true), true),
+    signing_host: trimValue(get('signing_host')),
+    public_read: boolValue(get('public_read', true), true),
+    access_key_id: trimValue(get('access_key_id')),
+    secret_access_key: trimValue(get('secret_access_key')),
+    user_customized: boolValue(get('user_customized', true), true),
+  };
+
+  if (type !== 's3') {
+    return { ok: false, error: 'storage.type currently only supports s3' };
+  }
+  if (!next.endpoint) return { ok: false, error: 'S3 endpoint is required' };
+  if (!/^https?:\/\//i.test(next.endpoint)) return { ok: false, error: 'S3 endpoint must start with http:// or https://' };
+  if (!next.bucket) return { ok: false, error: 'S3 bucket is required' };
+  if (!next.access_key_id) return { ok: false, error: 'S3 access_key_id is required' };
+  if (!next.secret_access_key) return { ok: false, error: 'S3 secret_access_key is required' };
+  return { ok: true, storage: next };
+}
+
+function getStorageSettings(cfg) {
+  const storage = {
+    type: 's3',
+    local_path: './data/storage-cache',
+    region: 'us-east-1',
+    force_path_style: true,
+    public_read: true,
+    user_customized: false,
+    ...(cfg?.storage || {}),
+  };
+  return {
+    storage,
+    public_url_preview: objectStorage.publicUrlForKey(storage, 'example.png'),
+  };
+}
+
+function updateStorageSettings(cfg, log, input) {
+  const normalized = normalizeStorageSettings(input, cfg?.storage || {});
+  if (!normalized.ok) return normalized;
+  const storage = { ...normalized.storage, user_customized: true };
+  if (!cfg.storage) cfg.storage = {};
+  cfg.storage = storage;
+
+  try {
+    const current = readYamlConfig();
+    current.storage = storage;
+    writeYamlConfig(current);
+  } catch (err) {
+    log?.warn?.('Failed to write storage config', { error: err.message });
+    return { ok: false, error: 'Failed to write config file: ' + err.message };
+  }
+  log?.info?.('Storage config updated', {
+    endpoint: storage.endpoint,
+    bucket: storage.bucket,
+    signing_host: storage.signing_host || '',
+  });
+  return {
+    ok: true,
+    storage,
+    public_url_preview: objectStorage.publicUrlForKey(storage, 'example.png'),
+  };
+}
+
+async function testStorageSettings(cfg, log, input) {
+  const normalized = normalizeStorageSettings(input || cfg?.storage || {}, cfg?.storage || {});
+  if (!normalized.ok) return normalized;
+  const storage = normalized.storage;
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const key = `diagnostics/storage-test-${suffix}.txt`;
+  const body = Buffer.from(`LocalMiniDrama storage test ${new Date().toISOString()}\n`, 'utf8');
+  try {
+    const url = await objectStorage.uploadBuffer(storage, key, body, 'text/plain', log);
+    let deleted = false;
+    try {
+      deleted = await objectStorage.deleteObject(storage, key, log);
+    } catch (err) {
+      log?.warn?.('Storage test cleanup failed', { key, error: err.message });
+    }
+    return { ok: true, key, url, deleted };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Storage test failed' };
+  }
 }
 
 function updateLanguage(cfg, log, language) {
@@ -71,6 +207,9 @@ module.exports = {
   setConfigPath,
   getLanguage,
   updateLanguage,
+  getStorageSettings,
+  updateStorageSettings,
+  testStorageSettings,
   getGlobalSetting,
   setGlobalSetting,
 };

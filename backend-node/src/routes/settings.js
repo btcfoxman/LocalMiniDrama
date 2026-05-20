@@ -54,11 +54,39 @@ function updateGenerationSettings(db) {
   };
 }
 
+/** GET /settings/storage — 获取 S3 存储配置 */
+function getStorageSettings(cfg) {
+  return (req, res) => {
+    response.success(res, settingsService.getStorageSettings(cfg));
+  };
+}
+
+/** PUT /settings/storage — 更新 S3 存储配置 */
+function updateStorageSettings(cfg, log) {
+  return (req, res) => {
+    const out = settingsService.updateStorageSettings(cfg, log, req.body || {});
+    if (!out.ok) return response.badRequest(res, out.error);
+    response.success(res, out);
+  };
+}
+
+/** POST /settings/storage/test — 测试 S3 签名上传与删除 */
+function testStorageSettings(cfg, log) {
+  return async (req, res) => {
+    const out = await settingsService.testStorageSettings(cfg, log, req.body?.storage || req.body || null);
+    if (!out.ok) return response.badRequest(res, out.error);
+    response.success(res, out);
+  };
+}
+
 module.exports = function settingsRoutes(db, cfg, log) {
   return {
     getLanguage: getLanguage(cfg),
     updateLanguage: updateLanguage(cfg, log),
     getGenerationSettings: getGenerationSettings(db),
     updateGenerationSettings: updateGenerationSettings(db),
+    getStorageSettings: getStorageSettings(cfg),
+    updateStorageSettings: updateStorageSettings(cfg, log),
+    testStorageSettings: testStorageSettings(cfg, log),
   };
 };

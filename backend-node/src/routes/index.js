@@ -288,6 +288,9 @@ function setupRouter(cfg, db, log) {
   r.put('/settings/language', settings.updateLanguage);
   r.get('/settings/generation', settings.getGenerationSettings);
   r.put('/settings/generation', settings.updateGenerationSettings);
+  r.get('/settings/storage', settings.getStorageSettings);
+  r.put('/settings/storage', settings.updateStorageSettings);
+  r.post('/settings/storage/test', settings.testStorageSettings);
 
   // ---------- prompt overrides ----------
   r.get('/settings/prompts', promptOverrides.list);

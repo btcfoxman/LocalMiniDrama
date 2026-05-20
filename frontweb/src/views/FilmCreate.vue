@@ -7453,11 +7453,19 @@ html.light .sd2-doc-tip a { color: #5b21b6; }
 }
 .asset-cover-actions {
   display: flex;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 3px;
+  padding: 5px 5px;
   border-top: 1px solid rgba(255,255,255,0.06);
 }
-.asset-cover-actions .el-button { flex: 1; justify-content: center; }
+.asset-cover-actions .el-button {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  padding-left: 6px;
+  padding-right: 6px;
+  font-size: 12px;
+}
+.asset-cover-actions :deep(.el-button + .el-button) { margin-left: 0; }
 html.light .asset-cover-actions { border-top-color: rgba(139,92,246,0.1); }
 /* 额外参考图缩略图条 */
 .extra-images-strip {

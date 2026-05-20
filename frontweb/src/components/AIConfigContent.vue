@@ -120,6 +120,11 @@
           <SceneModelMap />
         </div>
       </el-tab-pane>
+      <el-tab-pane label="存储设置" name="storage">
+        <div class="tab-content">
+          <StorageConfigPanel />
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="生成设置" name="generation">
         <div class="tab-content generation-settings">
           <div class="gs-section-title">⚡ 一键生成并发设置</div>
@@ -1049,6 +1054,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import StorageConfigPanel from '@/components/StorageConfigPanel.vue'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)

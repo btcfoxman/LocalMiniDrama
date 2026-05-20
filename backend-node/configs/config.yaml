@@ -19,6 +19,7 @@ database:
   max_open: 100
 storage:
   type: s3
+  user_customized: false
   local_path: ./data/storage-cache
   base_url: https://s3-3-6.aiid.edu.kg/localminidrama
   public_base_url: https://s3-3-6.aiid.edu.kg/localminidrama
