@@ -44,6 +44,9 @@ writeMainLog(`main.js loaded packaged=${app.isPackaged} exec=${process.execPath}
 const BACKEND_APP_PATH = path.join(__dirname, 'backend-app');
 const BACKEND_NODE_PATH = path.join(__dirname, '..', 'backend-node');
 const DEFAULT_PORT = 5679;
+// Client-facing app-market update service. CI's ORCHESTRATION_API_URL is only
+// used to publish release metadata and may point to a different/internal API.
+const DEFAULT_UPDATE_SERVICE_BASE_URL = 'https://download-drama.kuaxixing.com';
 
 let serverInstance = null;
 let mainWindow = null;
@@ -281,9 +284,7 @@ function getUpdateConfig() {
   const serviceBaseUrl = trimTrailingSlash(
     process.env.OVERSEASDRAMA_UPDATE_SERVICE_URL
       || process.env.APP_MARKET_UPDATE_BASE_URL
-      || process.env.ORCHESTRATION_API_URL
-      || pkg.updateServiceBaseUrl
-      || ''
+      || DEFAULT_UPDATE_SERVICE_BASE_URL
   );
   const feedUrl = trimTrailingSlash(
     process.env.OVERSEASDRAMA_UPDATE_FEED_URL

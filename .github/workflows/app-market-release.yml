@@ -46,6 +46,7 @@ jobs:
   windows:
     name: Publish Windows
     runs-on: windows-latest
+    environment: SSH-Guangzhou
 
     steps:
       - name: Checkout
@@ -122,10 +123,8 @@ jobs:
         shell: pwsh
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
         run: |
           npx electron-builder --win nsis --publish never `
-            -c.extraMetadata.updateServiceBaseUrl="$env:ORCHESTRATION_API_URL" `
             -c.extraMetadata.updateAppKey="overseas-drama-desktop" `
             -c.extraMetadata.updateChannel="$env:APP_MARKET_CHANNEL" `
             -c.extraMetadata.updateEnabled=true

@@ -1,6 +1,6 @@
 {
   "name": "overseasdrama-desktop",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "description": "OverseasDrama desktop client",
   "main": "main.js",
   "author": "OverseasDrama",
@@ -10,7 +10,6 @@
     "url": "https://github.com/btcfoxman/LocalMiniDrama.git"
   },
   "updateAppKey": "overseas-drama-desktop",
-  "updateServiceBaseUrl": "",
   "updateChannel": "stable",
   "updateEnabled": true,
   "scripts": {
@@ -53,7 +52,6 @@
     "electronUpdaterCompatibility": ">=2.16",
     "extraMetadata": {
       "updateAppKey": "overseas-drama-desktop",
-      "updateServiceBaseUrl": "",
       "updateChannel": "stable",
       "updateEnabled": true
     },
