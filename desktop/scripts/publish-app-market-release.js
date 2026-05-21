@@ -125,6 +125,16 @@ function collectFiles(releaseDir) {
     .filter(Boolean);
 }
 
+function filterFiles(files, filePattern) {
+  if (!filePattern) return files;
+  const pattern = new RegExp(filePattern, 'i');
+  const matched = files.filter((file) => pattern.test(file.fileName));
+  if (!matched.length) {
+    throw new Error(`APP_MARKET_FILE_PATTERN did not match any artifact: ${filePattern}`);
+  }
+  return matched;
+}
+
 function choosePrimary(files, platform, primaryPattern) {
   if (primaryPattern) {
     const pattern = new RegExp(primaryPattern, 'i');
@@ -288,7 +298,7 @@ async function main() {
   };
 
   const releaseDir = path.resolve(rootDir, env('APP_MARKET_RELEASE_DIR', 'release'));
-  const files = collectFiles(releaseDir);
+  const files = filterFiles(collectFiles(releaseDir), env('APP_MARKET_FILE_PATTERN'));
   const primary = choosePrimary(files, options.platform, env('APP_MARKET_PRIMARY_PATTERN'));
   if (!primary) throw new Error(`no primary artifact found in ${releaseDir}`);
 

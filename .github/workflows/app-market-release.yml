@@ -162,3 +162,150 @@ jobs:
             desktop/release/latest*.yml
           if-no-files-found: error
           retention-days: 14
+
+  macos:
+    name: Publish macOS
+    runs-on: macos-latest
+    environment: SSH-Guangzhou
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            frontweb/package-lock.json
+            backend-node/package-lock.json
+            desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare publish variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="${{ github.event.inputs.channel }}"
+          if [ -z "$channel" ]; then channel="stable"; fi
+          status="${{ github.event.inputs.status }}"
+          if [ -z "$status" ]; then status="active"; fi
+          staging="${{ github.event.inputs.staging_percentage }}"
+          if [ -z "$staging" ]; then staging="100"; fi
+          force_update="${{ github.event.inputs.force_update }}"
+          if [ -z "$force_update" ]; then force_update="false"; fi
+          {
+            echo "APP_MARKET_CHANNEL=$channel"
+            echo "APP_MARKET_STATUS=$status"
+            echo "APP_MARKET_STAGING_PERCENTAGE=$staging"
+            echo "APP_MARKET_FORCE_UPDATE=$force_update"
+            echo "APP_MARKET_MIN_SUPPORTED_VERSION=${{ github.event.inputs.min_supported_version }}"
+            echo "APP_MARKET_RELEASE_NOTES=${{ github.event.inputs.release_notes }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        working-directory: frontweb
+        run: npm ci
+
+      - name: Install backend dependencies
+        working-directory: backend-node
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
+        run: npm ci
+
+      - name: Install desktop dependencies and rebuild native modules
+        working-directory: desktop
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontweb
+        run: npm run build
+
+      - name: Copy frontend dist
+        working-directory: desktop
+        run: node scripts/copy-front.js
+
+      - name: Copy backend
+        working-directory: desktop
+        run: node scripts/copy-backend.js
+
+      - name: Clean release directory
+        working-directory: desktop
+        run: rm -rf release
+
+      - name: Build macOS packages
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npx electron-builder --mac --config electron-builder-mac.json --publish never \
+            --config.extraMetadata.updateAppKey=overseas-drama-desktop \
+            --config.extraMetadata.updateChannel="$APP_MARKET_CHANNEL" \
+            --config.extraMetadata.updateEnabled=true
+
+      - name: Publish macOS x64 to app market
+        working-directory: desktop
+        env:
+          ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
+          ORCHESTRATION_API_KEY: ${{ secrets.ORCHESTRATION_API_KEY }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT || vars.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET || vars.OSS_BUCKET }}
+          OSS_BASE_DIR: ${{ secrets.OSS_BASE_DIR || vars.OSS_BASE_DIR }}
+          OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL || vars.OSS_PUBLIC_BASE_URL }}
+          APP_MARKET_APP_KEY: overseas-drama-desktop
+          APP_MARKET_APP_NAME: 出海短剧工厂
+          APP_MARKET_APP_TYPE: desktop
+          APP_MARKET_VENDOR: OverseasDrama
+          APP_MARKET_PLATFORM: darwin
+          APP_MARKET_ARCH: x64
+          APP_MARKET_ARTIFACT_KIND: full
+          APP_MARKET_FILE_PATTERN: '^OverseasDrama-.*-mac-x64\.(dmg|zip)(\.blockmap)?$'
+          APP_MARKET_PRIMARY_PATTERN: '^OverseasDrama-.*-mac-x64\.zip$'
+          APP_MARKET_COMMIT_SHA: ${{ github.sha }}
+          APP_MARKET_BUILD_NUMBER: ${{ github.run_number }}
+        run: node scripts/publish-app-market-release.js
+
+      - name: Publish macOS arm64 to app market
+        working-directory: desktop
+        env:
+          ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
+          ORCHESTRATION_API_KEY: ${{ secrets.ORCHESTRATION_API_KEY }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT || vars.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET || vars.OSS_BUCKET }}
+          OSS_BASE_DIR: ${{ secrets.OSS_BASE_DIR || vars.OSS_BASE_DIR }}
+          OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL || vars.OSS_PUBLIC_BASE_URL }}
+          APP_MARKET_APP_KEY: overseas-drama-desktop
+          APP_MARKET_APP_NAME: 出海短剧工厂
+          APP_MARKET_APP_TYPE: desktop
+          APP_MARKET_VENDOR: OverseasDrama
+          APP_MARKET_PLATFORM: darwin
+          APP_MARKET_ARCH: arm64
+          APP_MARKET_ARTIFACT_KIND: full
+          APP_MARKET_FILE_PATTERN: '^OverseasDrama-.*-mac-arm64\.(dmg|zip)(\.blockmap)?$'
+          APP_MARKET_PRIMARY_PATTERN: '^OverseasDrama-.*-mac-arm64\.zip$'
+          APP_MARKET_COMMIT_SHA: ${{ github.sha }}
+          APP_MARKET_BUILD_NUMBER: ${{ github.run_number }}
+        run: node scripts/publish-app-market-release.js
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppMarket-macOS
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14

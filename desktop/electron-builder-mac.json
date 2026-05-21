@@ -1,6 +1,7 @@
 {
   "appId": "com.overseasdrama.desktop",
   "productName": "出海短剧工厂",
+  "artifactName": "OverseasDrama-${version}-mac-${arch}.${ext}",
   "electronUpdaterCompatibility": ">=2.16",
   "extraMetadata": {
     "updateAppKey": "overseas-drama-desktop",
