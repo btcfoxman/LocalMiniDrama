@@ -27,6 +27,17 @@ function trimTrailingSlash(value) {
   return String(value || '').trim().replace(/\/+$/g, '');
 }
 
+function normalizeUrl(value, name) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return trimTrailingSlash(new URL(withProtocol).toString());
+  } catch (_) {
+    throw new Error(`${name} must be a valid URL, e.g. https://oss-cn-hongkong.aliyuncs.com. Received: ${raw}`);
+  }
+}
+
 function boolValue(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -123,7 +134,7 @@ function hashesFor(filePath) {
 }
 
 function createS3Client() {
-  const endpoint = requiredEnv('OSS_ENDPOINT');
+  const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
   return new S3Client({
     endpoint,
     region: env('OSS_REGION', 'us-east-1'),
@@ -138,10 +149,11 @@ function createS3Client() {
 async function uploadArtifacts(files, options) {
   const client = createS3Client();
   const bucket = requiredEnv('OSS_BUCKET');
-  const publicBase = trimTrailingSlash(
+  const publicBase = normalizeUrl(
     env('OSS_PUBLIC_BASE_URL')
       || env('OSS_BASE_URL')
-      || `${trimTrailingSlash(env('OSS_ENDPOINT'))}/${bucket}`
+      || `${normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT')}/${bucket}`,
+    'OSS_PUBLIC_BASE_URL'
   );
 
   for (const file of files) {
