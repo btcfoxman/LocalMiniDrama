@@ -157,6 +157,8 @@ function createS3Client() {
     endpoint,
     region: env('OSS_REGION', 'us-east-1'),
     forcePathStyle,
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
     credentials: {
       accessKeyId: requiredEnv('OSS_ACCESS_KEY_ID'),
       secretAccessKey: requiredEnv('OSS_ACCESS_KEY_SECRET'),
@@ -187,10 +189,12 @@ async function uploadArtifacts(files, options) {
       file.fileName,
     ].filter(Boolean).map(trimSlashes).join('/');
 
+    const body = fs.readFileSync(file.absPath);
     await client.send(new PutObjectCommand({
       Bucket: bucket,
       Key: key,
-      Body: fs.createReadStream(file.absPath),
+      Body: body,
+      ContentLength: file.size,
       ContentType: contentTypeFor(file.fileName),
     }));
 
