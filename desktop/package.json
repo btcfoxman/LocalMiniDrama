@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/btcfoxman/LocalMiniDrama.git"
   },
-  "updateAppKey": "local-mini-drama-desktop",
+  "updateAppKey": "overseas-drama-desktop",
   "updateServiceBaseUrl": "",
   "updateChannel": "stable",
   "updateEnabled": true,
@@ -52,7 +52,7 @@
     "artifactName": "OverseasDrama-${version}.${ext}",
     "electronUpdaterCompatibility": ">=2.16",
     "extraMetadata": {
-      "updateAppKey": "local-mini-drama-desktop",
+      "updateAppKey": "overseas-drama-desktop",
       "updateServiceBaseUrl": "",
       "updateChannel": "stable",
       "updateEnabled": true

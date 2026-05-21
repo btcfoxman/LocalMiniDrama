@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -46,6 +46,9 @@ const BACKEND_NODE_PATH = path.join(__dirname, '..', 'backend-node');
 const DEFAULT_PORT = 5679;
 
 let serverInstance = null;
+let mainWindow = null;
+let tray = null;
+let isQuitting = false;
 
 /** 开发模式用 backend-node（改代码即生效）；打包后用 backend-app */
 function getBackendModulePath() {
@@ -203,6 +206,32 @@ function getWindowIconPath() {
   return path.join(__dirname, 'assets', 'icons', 'icon.png');
 }
 
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function quitApp() {
+  isQuitting = true;
+  app.quit();
+}
+
+function ensureTray() {
+  if (tray) return tray;
+  tray = new Tray(getWindowIconPath());
+  tray.setToolTip('OverseasDrama');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示主窗口', click: showMainWindow },
+    { type: 'separator' },
+    { label: '退出', click: quitApp },
+  ]));
+  tray.on('click', showMainWindow);
+  tray.on('double-click', showMainWindow);
+  return tray;
+}
+
 function trimTrailingSlash(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
@@ -243,7 +272,7 @@ function getUpdateConfig() {
     process.env.OVERSEASDRAMA_UPDATE_APP_KEY
       || process.env.APP_MARKET_APP_KEY
       || pkg.updateAppKey
-      || 'local-mini-drama-desktop'
+      || 'overseas-drama-desktop'
   ).trim();
   const enabled = boolConfig(
     process.env.OVERSEASDRAMA_UPDATE_ENABLED,
@@ -384,6 +413,7 @@ function setupAutoUpdater() {
         message: 'A required update is ready to install.',
         detail: 'The application will restart to complete the update.',
       }).catch(() => null);
+      isQuitting = true;
       autoUpdater.quitAndInstall(false, true);
       return;
     }
@@ -398,6 +428,7 @@ function setupAutoUpdater() {
       detail: 'Restart the application to finish installing the update.',
     }).catch(() => ({ response: 1 }));
     if (result.response === 0) {
+      isQuitting = true;
       autoUpdater.quitAndInstall(false, true);
     }
   });
@@ -445,6 +476,8 @@ function createWindow(port) {
     webPreferences: { nodeIntegration: false, contextIsolation: true },
     show: false,
   });
+  mainWindow = win;
+  ensureTray();
   win.once('ready-to-show', () => {
     win.show();
     writeMainLog('window ready-to-show');
@@ -465,7 +498,15 @@ function createWindow(port) {
   });
   writeMainLog(`createWindow loadURL http://127.0.0.1:${port}`);
   win.loadURL(`http://127.0.0.1:${port}`);
-  win.on('closed', () => app.quit());
+  win.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    win.hide();
+    writeMainLog('window hidden to tray');
+  });
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
   if (process.env.OVERSEASDRAMA_DEVTOOLS === '1') {
     win.webContents.openDevTools();
   }
@@ -533,8 +574,11 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   if (serverInstance) {
     serverInstance.close();
     serverInstance = null;
   }
 });
+
+app.on('activate', showMainWindow);

@@ -3,14 +3,6 @@ name: App Market Release
 on:
   workflow_dispatch:
     inputs:
-      variant:
-        description: Build variant
-        type: choice
-        default: standard
-        options:
-          - standard
-          - lite
-          - both
       channel:
         description: App market channel
         type: choice
@@ -52,30 +44,14 @@ permissions:
 
 jobs:
   windows:
-    name: Publish Windows ${{ matrix.variant }}
+    name: Publish Windows
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: standard
-            app-key: local-mini-drama-desktop
-            artifact-kind: full
-            build-config: ''
-            primary-pattern: '^OverseasDrama-Setup-.*\.exe$'
-          - variant: lite
-            app-key: local-mini-drama-desktop-lite
-            artifact-kind: lite
-            build-config: '--config electron-builder-lite.json'
-            primary-pattern: '^OverseasDrama-Lite-Setup-.*\.exe$'
 
     steps:
       - name: Checkout
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -86,13 +62,11 @@ jobs:
             desktop/package-lock.json
 
       - name: Setup Python
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Prepare publish variables
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         shell: pwsh
         run: |
           $channel = "${{ github.event.inputs.channel }}"
@@ -111,61 +85,52 @@ jobs:
           "APP_MARKET_RELEASE_NOTES=${{ github.event.inputs.release_notes }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install frontend dependencies
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: frontweb
         run: npm ci
 
       - name: Install backend dependencies
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: backend-node
         env:
           NODE_TLS_REJECT_UNAUTHORIZED: '0'
         run: npm ci
 
       - name: Install desktop dependencies and rebuild native modules
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         env:
           NODE_TLS_REJECT_UNAUTHORIZED: '0'
         run: npm ci
 
       - name: Build frontend
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: frontweb
         run: npm run build
 
       - name: Copy frontend dist
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         run: node scripts/copy-front.js
 
       - name: Copy backend
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         run: node scripts/copy-backend.js
 
       - name: Clean release directory
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         shell: pwsh
         run: Remove-Item -Recurse -Force release -ErrorAction SilentlyContinue
 
       - name: Build Windows NSIS package
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         shell: pwsh
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
         run: |
-          npx electron-builder --win nsis ${{ matrix.build-config }} --publish never `
+          npx electron-builder --win nsis --publish never `
             -c.extraMetadata.updateServiceBaseUrl="$env:ORCHESTRATION_API_URL" `
-            -c.extraMetadata.updateAppKey="${{ matrix.app-key }}" `
+            -c.extraMetadata.updateAppKey="overseas-drama-desktop" `
             -c.extraMetadata.updateChannel="$env:APP_MARKET_CHANNEL" `
             -c.extraMetadata.updateEnabled=true
 
       - name: Publish to app market
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         working-directory: desktop
         env:
           ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
@@ -176,23 +141,22 @@ jobs:
           OSS_BUCKET: ${{ secrets.OSS_BUCKET || vars.OSS_BUCKET }}
           OSS_BASE_DIR: ${{ secrets.OSS_BASE_DIR || vars.OSS_BASE_DIR }}
           OSS_PUBLIC_BASE_URL: ${{ secrets.OSS_PUBLIC_BASE_URL || vars.OSS_PUBLIC_BASE_URL }}
-          APP_MARKET_APP_KEY: ${{ matrix.app-key }}
+          APP_MARKET_APP_KEY: overseas-drama-desktop
           APP_MARKET_APP_NAME: 出海短剧工厂
           APP_MARKET_APP_TYPE: desktop
           APP_MARKET_VENDOR: OverseasDrama
           APP_MARKET_PLATFORM: win32
           APP_MARKET_ARCH: x64
-          APP_MARKET_ARTIFACT_KIND: ${{ matrix.artifact-kind }}
-          APP_MARKET_PRIMARY_PATTERN: ${{ matrix.primary-pattern }}
+          APP_MARKET_ARTIFACT_KIND: full
+          APP_MARKET_PRIMARY_PATTERN: '^OverseasDrama-Setup-.*\.exe$'
           APP_MARKET_COMMIT_SHA: ${{ github.sha }}
           APP_MARKET_BUILD_NUMBER: ${{ github.run_number }}
         run: node scripts/publish-app-market-release.js
 
       - name: Upload workflow artifacts
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant == 'both' || inputs.variant == matrix.variant }}
         uses: actions/upload-artifact@v4
         with:
-          name: AppMarket-Windows-${{ matrix.variant }}
+          name: AppMarket-Windows
           path: |
             desktop/release/*.exe
             desktop/release/*.blockmap

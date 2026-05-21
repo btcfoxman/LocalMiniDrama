@@ -200,7 +200,7 @@ async function main() {
   assertSemver(version);
 
   const options = {
-    appKey: env('APP_MARKET_APP_KEY', pkg.updateAppKey || 'local-mini-drama-desktop'),
+    appKey: env('APP_MARKET_APP_KEY', pkg.updateAppKey || 'overseas-drama-desktop'),
     appName: env('APP_MARKET_APP_NAME', pkg.build?.productName || pkg.name),
     appType: env('APP_MARKET_APP_TYPE', 'desktop'),
     vendor: env('APP_MARKET_VENDOR', pkg.author || 'OverseasDrama'),

@@ -145,7 +145,7 @@
 - **视频帧连贯性（连贯帧模式）**：批量生成分镜视频新增「连贯帧模式」开关；启用后强制顺序生成，每条视频完成后自动用浏览器 Canvas 提取末帧，上传后作为下一条视频的 `first_frame_url` 参考图，有效减少视频片段间的跳跃感；tooltip 详细说明支持的模型（kling-video、wan2.2-kf2v-flash 等）及不支持模型的静默降级行为
 - **小说/长文章节导入**：故事生成区域新增「导入小说」按钮；支持粘贴文本或上传 `.txt/.md` 文件；后端基于正则识别章节标题自动分割，可选 AI 改写为剧本格式；返回章节列表自动填入剧本编辑区，每章对应一集（`novelImportService.js`）
 - **场景 AI 生成 tooltip**：场景 AI 生成按钮悬停提示改为「多角度图一张（正/侧/俯/仰）」，原重复的「多视角」独立按钮已移除
-- **ffmpeg 自动解压**：安装包首次启动时自动将内置的 `ffmpeg.exe`/`ffprobe.exe` 从 `resources/ffmpeg/` 复制到 userData 工作目录，无需用户手动配置；已存在则跳过，支持用户手动替换版本；`electron-builder-lite.json` 通过 `extraResources` 将 `backend-node/tools/ffmpeg` 打包进安装包
+- **ffmpeg 自动解压**：安装包首次启动时自动将内置的 `ffmpeg.exe`/`ffprobe.exe` 从 `resources/ffmpeg/` 复制到 userData 工作目录，无需用户手动配置；已存在则跳过，支持用户手动替换版本；electron-builder 通过 `extraResources` 将 `backend-node/tools/ffmpeg` 打包进安装包
 
 ### 修复
 

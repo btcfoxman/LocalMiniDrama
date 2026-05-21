@@ -3,7 +3,7 @@
   "productName": "出海短剧工厂",
   "electronUpdaterCompatibility": ">=2.16",
   "extraMetadata": {
-    "updateAppKey": "local-mini-drama-desktop",
+    "updateAppKey": "overseas-drama-desktop",
     "updateServiceBaseUrl": "",
     "updateChannel": "stable",
     "updateEnabled": true

@@ -6,38 +6,20 @@ const path = require('path');
 const isWin = process.platform === 'win32';
 const cwd = path.join(__dirname, '..');
 
-// 第一步：完整构建（含示例资源），前端/后端同时准备
-console.log('\n========== [1/2] 构建完整版（含示例资源）==========\n');
-const full = spawnSync(isWin ? 'npm.cmd' : 'npm', ['run', 'dist'], {
+console.log('\n========== Build standard package ==========\n');
+const result = spawnSync(isWin ? 'npm.cmd' : 'npm', ['run', 'dist'], {
   stdio: 'inherit',
   shell: isWin,
   cwd,
 });
-if (full.status !== 0) {
-  console.error('完整版构建失败，终止。');
-  process.exit(full.status || 1);
+
+if (result.status !== 0) {
+  console.error('Standard package build failed.');
+  process.exit(result.status || 1);
 }
 
-// 第二步：纯净版构建（不含示例资源），前端/后端已准备好，直接调 electron-builder
-console.log('\n========== [2/2] 构建纯净版（不含示例资源）==========\n');
-const lite = spawnSync(
-  isWin ? 'npx.cmd' : 'npx',
-  ['electron-builder', '--win', '--config', 'electron-builder-lite.json'],
-  {
-    stdio: 'inherit',
-    shell: isWin,
-    cwd,
-  }
-);
-if (lite.status !== 0) {
-  console.error('纯净版构建失败。');
-  process.exit(lite.status || 1);
-}
-
-console.log('\n========== 全部构建完成 ==========');
-console.log('输出目录：release/');
-console.log('  完整版安装包：OverseasDrama-Setup-x.x.x.exe');
-console.log('  完整版便携版：OverseasDrama-x.x.x.exe');
-console.log('  纯净版安装包：OverseasDrama-Lite-Setup-x.x.x.exe');
-console.log('  纯净版便携版：OverseasDrama-Lite-x.x.x.exe\n');
+console.log('\n========== Build completed ==========');
+console.log('Output directory: release/');
+console.log('  Installer: OverseasDrama-Setup-x.x.x.exe');
+console.log('  Portable: OverseasDrama-x.x.x.exe\n');
 process.exit(0);
