@@ -34,7 +34,7 @@ storage:
 image_proxy:
   enabled: true
   upload_url: https://imageproxy.zhongzhuan.chat/api/upload
-  token: ''
+  token: test
   expire_hours: 23
   use_for_gemini: true
 ai:

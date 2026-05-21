@@ -561,6 +561,7 @@ function saveCharacters(db, log, dramaId, req) {
         const imgParams = [];
         if ('image_url' in char) { imgFields.push('image_url = ?'); imgParams.push(char.image_url ?? null); }
         if ('local_path' in char) { imgFields.push('local_path = ?'); imgParams.push(char.local_path ?? null); }
+        if ('ref_image' in char) { imgFields.push('ref_image = ?'); imgParams.push(char.ref_image ?? null); }
         if (imgFields.length > 0) {
           const prevC = db
             .prepare('SELECT id, local_path, image_url, seedance2_asset FROM characters WHERE id = ? AND deleted_at IS NULL')
@@ -587,6 +588,7 @@ function saveCharacters(db, log, dramaId, req) {
       const imgParamsN = [];
       if ('image_url' in char) { imgFieldsN.push('image_url = ?'); imgParamsN.push(char.image_url ?? null); }
       if ('local_path' in char) { imgFieldsN.push('local_path = ?'); imgParamsN.push(char.local_path ?? null); }
+      if ('ref_image' in char) { imgFieldsN.push('ref_image = ?'); imgParamsN.push(char.ref_image ?? null); }
       if (imgFieldsN.length > 0) {
         const prevN = db
           .prepare('SELECT id, local_path, image_url, seedance2_asset FROM characters WHERE id = ?')
@@ -606,9 +608,9 @@ function saveCharacters(db, log, dramaId, req) {
     }
     const now = new Date().toISOString();
     const info = db.prepare(
-      `INSERT INTO characters (drama_id, name, role, description, personality, appearance, image_url, local_path, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(did, char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, char.image_url ?? null, char.local_path ?? null, now, now);
+      `INSERT INTO characters (drama_id, name, role, description, personality, appearance, image_url, local_path, ref_image, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(did, char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, char.image_url ?? null, char.local_path ?? null, char.ref_image ?? null, now, now);
     characterIds.push(info.lastInsertRowid);
   }
   if (req.episode_id && characterIds.length > 0) {

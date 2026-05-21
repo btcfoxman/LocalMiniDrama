@@ -9,6 +9,10 @@
     "type": "git",
     "url": "https://github.com/btcfoxman/LocalMiniDrama.git"
   },
+  "updateAppKey": "local-mini-drama-desktop",
+  "updateServiceBaseUrl": "",
+  "updateChannel": "stable",
+  "updateEnabled": true,
   "scripts": {
     "prestart": "node scripts/copy-backend.js",
     "start": "electron .",
@@ -28,6 +32,7 @@
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.6.0",
     "cors": "^2.8.5",
+    "electron-updater": "^6.8.3",
     "express": "^4.21.0",
     "js-yaml": "^4.1.0",
     "jsonrepair": "^3.13.3",
@@ -45,12 +50,20 @@
     "appId": "com.overseasdrama.desktop",
     "productName": "出海短剧工厂",
     "artifactName": "OverseasDrama-${version}.${ext}",
+    "electronUpdaterCompatibility": ">=2.16",
+    "extraMetadata": {
+      "updateAppKey": "local-mini-drama-desktop",
+      "updateServiceBaseUrl": "",
+      "updateChannel": "stable",
+      "updateEnabled": true
+    },
     "directories": {
       "output": "release"
     },
     "files": [
       "main.js",
       "package.json",
+      "assets/icons/**/*",
       "backend-app/**/*",
       "node_modules/**/*"
     ],
@@ -77,12 +90,16 @@
     ],
     "win": {
       "target": ["nsis", "portable"],
-      "icon": null,
+      "icon": "assets/icons/icon.ico",
       "signAndEditExecutable": false
+    },
+    "mac": {
+      "icon": "assets/icons/icon.icns"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "differentialPackage": true,
       "artifactName": "OverseasDrama-Setup-${version}.${ext}"
     },
     "portable": {

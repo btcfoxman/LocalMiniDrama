@@ -31,6 +31,26 @@ export function useScenes(deps) {
     return new File([u8arr], filename || 'reference.png', { type: mime })
   }
 
+  function requireCurrentEpisode() {
+    if (currentEpisodeId.value) return true
+    ElMessage.warning('请先选择或保存当前集')
+    return false
+  }
+
+  async function uploadAddSceneImageIfAny() {
+    const refImg = addSceneRefImage.value
+    if (!refImg) return null
+    const file = dataUrlToFile(refImg.dataUrl, refImg.filename || 'reference.png')
+    const uploadRes = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
+    const localPath = uploadRes.local_path || uploadRes.path || ''
+    const url = uploadRes.url || localPath || ''
+    return {
+      image_url: url || undefined,
+      local_path: localPath || undefined,
+      ref_image: localPath || url || undefined,
+    }
+  }
+
   // ── 场景弹窗状态 ──────────────────────────────────────
   const showEditScene = ref(false)
   const editSceneForm = ref(null)
@@ -89,6 +109,7 @@ export function useScenes(deps) {
   }
 
   function openAddScene() {
+    if (!requireCurrentEpisode()) return
     editSceneForm.value = { location: '', time: '', prompt: '' }
     showEditScene.value = true
   }
@@ -197,6 +218,7 @@ export function useScenes(deps) {
   async function submitEditScene() {
     const form = editSceneForm.value
     if (!form?.location?.trim() || !store.dramaId) return
+    if (!form.id && !requireCurrentEpisode()) return
     editSceneSaving.value = true
     try {
       if (form.id) {
@@ -209,20 +231,21 @@ export function useScenes(deps) {
         await saveSceneRefImageIfAny(form.id)
         ElMessage.success('场景已保存')
       } else {
-        await sceneAPI.create({
+        const uploadedImage = await uploadAddSceneImageIfAny()
+        const payload = {
           drama_id: store.dramaId,
-          episode_id: currentEpisodeId.value || undefined,
+          episode_id: currentEpisodeId.value,
           location: form.location.trim(),
           time: form.time || undefined,
           prompt: form.prompt || undefined
-        })
-        await loadDrama()
-        if (addSceneRefImage.value) {
-          const newScene = (store.drama?.scenes || []).find(
-            s => s.location === form.location.trim() && (s.time || '') === (form.time || '')
-          )
-          if (newScene?.id) await saveSceneRefImageIfAny(newScene.id)
         }
+        if (uploadedImage) {
+          if (uploadedImage.image_url) payload.image_url = uploadedImage.image_url
+          if (uploadedImage.local_path) payload.local_path = uploadedImage.local_path
+          if (uploadedImage.ref_image) payload.ref_image = uploadedImage.ref_image
+        }
+        await sceneAPI.create(payload)
+        addSceneRefImage.value = null
         ElMessage.success('场景已添加')
       }
       await loadDrama()

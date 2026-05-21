@@ -59,8 +59,8 @@ function createScene(db, log, dramaId, req) {
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
   try {
     const info = db.prepare(
-      `INSERT INTO scenes (drama_id, episode_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
+      `INSERT INTO scenes (drama_id, episode_id, location, time, prompt, image_url, local_path, ref_image, storyboard_count, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
     ).run(
       Number(dramaId),
       episodeId,
@@ -69,6 +69,7 @@ function createScene(db, log, dramaId, req) {
       req.prompt || '',
       req.image_url ?? null,
       req.local_path ?? null,
+      req.ref_image ?? null,
       now,
       now
     );
@@ -78,9 +79,9 @@ function createScene(db, log, dramaId, req) {
     // 老库可能没有 episode_id 列，降级为不含 episode_id 的 INSERT
     if ((e.message || '').includes('episode_id')) {
       const info = db.prepare(
-        `INSERT INTO scenes (drama_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
-      ).run(Number(dramaId), req.location || '', req.time || '', req.prompt || '', req.image_url ?? null, req.local_path ?? null, now, now);
+        `INSERT INTO scenes (drama_id, location, time, prompt, image_url, local_path, ref_image, storyboard_count, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
+      ).run(Number(dramaId), req.location || '', req.time || '', req.prompt || '', req.image_url ?? null, req.local_path ?? null, req.ref_image ?? null, now, now);
       return getSceneById(db, info.lastInsertRowid);
     }
     throw e;
@@ -115,6 +116,7 @@ function getSceneById(db, id) {
     image_url: row.image_url,
     local_path: row.local_path,
     extra_images: row.extra_images || null,
+    ref_image: row.ref_image || null,
     status: row.status,
     created_at: row.created_at,
     updated_at: row.updated_at

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -64,6 +64,17 @@ function getBackendCwd() {
     return path.join(app.getPath('userData'), 'backend');
   }
   return getBackendModulePath();
+}
+
+let desktopPackageCache = null;
+function getDesktopPackage() {
+  if (desktopPackageCache) return desktopPackageCache;
+  try {
+    desktopPackageCache = require('./package.json');
+  } catch (_) {
+    desktopPackageCache = {};
+  }
+  return desktopPackageCache;
 }
 
 function shouldSyncBundledStorage(userStorage, bundledStorage) {
@@ -182,6 +193,226 @@ function getWebDistPath() {
   return path.join(__dirname, '..', 'frontweb', 'dist');
 }
 
+function appWindowTitle(pageTitle = '') {
+  const version = app.getVersion();
+  const baseTitle = String(pageTitle || '').replace(/\s*-\s*OverseasDrama\s*$/i, '').trim();
+  return baseTitle ? `${baseTitle} - OverseasDrama v${version}` : `OverseasDrama v${version}`;
+}
+
+function getWindowIconPath() {
+  return path.join(__dirname, 'assets', 'icons', 'icon.png');
+}
+
+function trimTrailingSlash(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function boolConfig(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  return !['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
+}
+
+function parseSemver(value) {
+  const match = String(value || '').trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] || '',
+  };
+}
+
+function compareSemver(left, right) {
+  const a = parseSemver(left);
+  const b = parseSemver(right);
+  if (!a || !b) return 0;
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1;
+  }
+  if (a.prerelease === b.prerelease) return 0;
+  if (!a.prerelease) return 1;
+  if (!b.prerelease) return -1;
+  return a.prerelease > b.prerelease ? 1 : -1;
+}
+
+function getUpdateConfig() {
+  const pkg = getDesktopPackage();
+  const appKey = String(
+    process.env.OVERSEASDRAMA_UPDATE_APP_KEY
+      || process.env.APP_MARKET_APP_KEY
+      || pkg.updateAppKey
+      || 'local-mini-drama-desktop'
+  ).trim();
+  const enabled = boolConfig(
+    process.env.OVERSEASDRAMA_UPDATE_ENABLED,
+    pkg.updateEnabled !== false
+  );
+  const serviceBaseUrl = trimTrailingSlash(
+    process.env.OVERSEASDRAMA_UPDATE_SERVICE_URL
+      || process.env.APP_MARKET_UPDATE_BASE_URL
+      || process.env.ORCHESTRATION_API_URL
+      || pkg.updateServiceBaseUrl
+      || ''
+  );
+  const feedUrl = trimTrailingSlash(
+    process.env.OVERSEASDRAMA_UPDATE_FEED_URL
+      || pkg.updateFeedUrl
+      || (serviceBaseUrl
+        ? `${serviceBaseUrl}/api/v1/app-market/${encodeURIComponent(appKey)}/electron/update/${process.platform}/${process.arch}`
+        : '')
+  );
+  const channel = String(process.env.OVERSEASDRAMA_UPDATE_CHANNEL || pkg.updateChannel || 'stable').trim() || 'stable';
+  const latestJsonUrl = serviceBaseUrl
+    ? `${serviceBaseUrl}/api/v1/app-market/${encodeURIComponent(appKey)}/latest?platform=${encodeURIComponent(process.platform)}&arch=${encodeURIComponent(process.arch)}&channel=${encodeURIComponent(channel)}&current_version=${encodeURIComponent(app.getVersion())}`
+    : '';
+
+  return { appKey, enabled, serviceBaseUrl, feedUrl, latestJsonUrl, channel };
+}
+
+async function fetchUpdatePolicy(config) {
+  if (!config.latestJsonUrl || typeof fetch !== 'function') return null;
+  try {
+    const res = await fetch(config.latestJsonUrl, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      writeMainLog(`update policy fetch failed status=${res.status}`);
+      return null;
+    }
+    const body = await res.json();
+    const latest = body?.data?.latest;
+    if (!latest) return null;
+    return {
+      version: latest.version || '',
+      forceUpdate: latest.force_update === true || latest.forceUpdate === true,
+      minSupportedVersion: latest.min_supported_version || latest.minSupportedVersion || '',
+    };
+  } catch (err) {
+    writeMainLog(`update policy fetch error: ${err && err.message ? err.message : err}`);
+    return null;
+  }
+}
+
+function isForceUpdate(policy) {
+  if (!policy) return false;
+  if (policy.forceUpdate) return true;
+  if (policy.minSupportedVersion && compareSemver(app.getVersion(), policy.minSupportedVersion) < 0) {
+    return true;
+  }
+  return false;
+}
+
+function setupAutoUpdater() {
+  const config = getUpdateConfig();
+  if (!config.enabled) {
+    writeMainLog('autoUpdater disabled by config');
+    return;
+  }
+  if (!app.isPackaged && process.env.OVERSEASDRAMA_FORCE_UPDATE_CHECK !== '1') {
+    writeMainLog('autoUpdater skipped in development');
+    return;
+  }
+  if (!config.feedUrl) {
+    writeMainLog('autoUpdater skipped: missing update service url');
+    return;
+  }
+  if (app.isPackaged && !/^https:\/\//i.test(config.feedUrl)) {
+    writeMainLog(`autoUpdater skipped: feed url must be https in packaged app (${config.feedUrl})`);
+    return;
+  }
+
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = require('electron-updater'));
+  } catch (err) {
+    writeMainLog(`autoUpdater unavailable: ${err && err.message ? err.message : err}`);
+    return;
+  }
+
+  let updatePolicyPromise = null;
+  let updatePolicy = null;
+  const loadPolicy = () => {
+    if (!updatePolicyPromise) {
+      updatePolicyPromise = fetchUpdatePolicy(config).then((policy) => {
+        updatePolicy = policy;
+        return policy;
+      });
+    }
+    return updatePolicyPromise;
+  };
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.setFeedURL({ provider: 'generic', url: config.feedUrl });
+
+  autoUpdater.on('checking-for-update', () => {
+    writeMainLog(`autoUpdater checking appKey=${config.appKey} channel=${config.channel} feed=${config.feedUrl}`);
+  });
+  autoUpdater.on('update-available', async (info) => {
+    const policy = await loadPolicy();
+    const force = isForceUpdate(policy);
+    writeMainLog(`autoUpdater update available version=${info?.version || ''} force=${force}`);
+    if (force) {
+      dialog.showMessageBox({
+        type: 'info',
+        buttons: ['OK'],
+        title: 'Update required',
+        message: 'A required update is being downloaded.',
+        detail: `Current version ${app.getVersion()} will be updated to ${info?.version || policy?.version || 'the latest version'}.`,
+      }).catch(() => {});
+    }
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    writeMainLog(`autoUpdater no update latest=${info?.version || ''}`);
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Number(progress?.percent || 0).toFixed(1);
+    writeMainLog(`autoUpdater download ${percent}% ${progress?.transferred || 0}/${progress?.total || 0}`);
+  });
+  autoUpdater.on('update-downloaded', async (info) => {
+    const policy = updatePolicy || await loadPolicy();
+    const force = isForceUpdate(policy);
+    writeMainLog(`autoUpdater update downloaded version=${info?.version || ''} force=${force}`);
+    if (force) {
+      await dialog.showMessageBox({
+        type: 'info',
+        buttons: ['Restart now'],
+        title: 'Update ready',
+        message: 'A required update is ready to install.',
+        detail: 'The application will restart to complete the update.',
+      }).catch(() => null);
+      autoUpdater.quitAndInstall(false, true);
+      return;
+    }
+
+    const result = await dialog.showMessageBox({
+      type: 'info',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update ready',
+      message: `OverseasDrama ${info?.version || ''} is ready to install.`,
+      detail: 'Restart the application to finish installing the update.',
+    }).catch(() => ({ response: 1 }));
+    if (result.response === 0) {
+      autoUpdater.quitAndInstall(false, true);
+    }
+  });
+  autoUpdater.on('error', (err) => {
+    writeMainLog(`autoUpdater error: ${err && err.stack ? err.stack : err}`);
+  });
+
+  setTimeout(() => {
+    loadPolicy().catch(() => null);
+    autoUpdater.checkForUpdates().catch((err) => {
+      writeMainLog(`autoUpdater check failed: ${err && err.message ? err.message : err}`);
+    });
+  }, 15000);
+}
+
 /**
  * 探测端口是否空闲：优先使用 preferredPort，被占用时让 OS 分配一个随机空闲端口。
  * 返回最终可用的端口号。
@@ -209,6 +440,8 @@ function createWindow(port) {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: appWindowTitle(),
+    icon: getWindowIconPath(),
     webPreferences: { nodeIntegration: false, contextIsolation: true },
     show: false,
   });
@@ -225,6 +458,10 @@ function createWindow(port) {
   }, 8000);
   win.webContents.on('did-fail-load', (_e, code, desc, url) => {
     writeMainLog(`did-fail-load code=${code} desc=${desc} url=${url}`);
+  });
+  win.on('page-title-updated', (event, title) => {
+    event.preventDefault();
+    win.setTitle(appWindowTitle(title));
   });
   writeMainLog(`createWindow loadURL http://127.0.0.1:${port}`);
   win.loadURL(`http://127.0.0.1:${port}`);
@@ -292,6 +529,7 @@ app.whenReady().then(async () => {
   }
   // startBackend 的 Promise 在 listen 回调中 resolve，服务器此时已就绪，直接建窗口
   createWindow(port);
+  setupAutoUpdater();
 });
 
 app.on('before-quit', () => {

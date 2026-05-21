@@ -4,8 +4,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="goList">
-          <span class="logo-main">出海短剧工厂</span>
-          <span class="logo-sub">OverseasDrama</span>
+          <img class="logo-mark" src="/app-logo.png" alt="" aria-hidden="true" />
+          <span class="logo-copy">
+            <span class="logo-main">出海短剧工厂</span>
+            <span class="logo-sub">OverseasDrama</span>
+          </span>
         </h1>
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ dramaId ? (store.drama?.title || '项目') : '新建故事' }}</span>
@@ -373,10 +376,10 @@
             </div>
             <div v-show="!charactersBlockCollapsed" class="resource-block-body">
               <div class="asset-actions">
-                <el-button type="primary" size="small" :loading="charactersGenerating" :disabled="!dramaId" @click="onGenerateCharacters">
+                <el-button type="primary" size="small" :loading="charactersGenerating" :disabled="!currentEpisodeId" @click="onGenerateCharacters">
                   剧本自动提取角色
                 </el-button>
-                <el-button size="small" :disabled="!dramaId" @click="openAddCharacter">添加角色</el-button>
+                <el-button size="small" :disabled="!currentEpisodeId" @click="openAddCharacter">添加角色</el-button>
                 <el-button size="small" @click="showCharLibrary = true">本剧角色库</el-button>
               </div>
               <div class="asset-list asset-list-two">
@@ -523,7 +526,7 @@
             <div v-show="!propsBlockCollapsed" class="resource-block-body">
               <div class="asset-actions">
                 <el-button type="primary" size="small" :loading="propsExtracting" :disabled="!currentEpisodeId" @click="onExtractProps">从剧本提取道具</el-button>
-                <el-button size="small" :disabled="!dramaId" @click="showAddProp = true">添加道具</el-button>
+                <el-button size="small" :disabled="!currentEpisodeId" @click="showAddProp = true">添加道具</el-button>
                 <el-button size="small" @click="showPropLibrary = true">本剧道具库</el-button>
               </div>
               <div class="asset-list asset-list-two">
@@ -600,7 +603,7 @@
                 <el-button type="primary" size="small" :loading="scenesExtracting" :disabled="!currentEpisodeId" @click="onExtractScenes">
                   从剧本提取场景
                 </el-button>
-                <el-button size="small" :disabled="!dramaId" @click="openAddScene">添加场景</el-button>
+                <el-button size="small" :disabled="!currentEpisodeId" @click="openAddScene">添加场景</el-button>
                 <el-button size="small" @click="showSceneLibrary = true">本剧场景库</el-button>
               </div>
               <div class="asset-list asset-list-two">
@@ -6346,12 +6349,24 @@ html.light .header {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 9px;
   line-height: 1;
   transition: filter 0.3s;
 }
 .logo:hover { filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.5)); }
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 8px;
+  box-shadow: 0 0 18px rgba(139, 92, 246, 0.25);
+}
+.logo-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 .logo-main {
   font-size: 1.05rem;
   font-weight: 700;

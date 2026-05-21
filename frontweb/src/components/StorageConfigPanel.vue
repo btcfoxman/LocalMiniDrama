@@ -152,7 +152,7 @@ const LOCAL_DEFAULT = Object.freeze({
 const IMAGE_PROXY_DEFAULT = Object.freeze({
   enabled: true,
   upload_url: 'https://imageproxy.zhongzhuan.chat/api/upload',
-  token: '',
+  token: 'test',
   expire_hours: 23,
   use_for_gemini: true,
 })
@@ -193,7 +193,7 @@ function applyImageProxy(proxy = {}) {
     ...proxy,
     enabled: proxy.enabled !== false,
     upload_url: proxy.upload_url || IMAGE_PROXY_DEFAULT.upload_url,
-    token: proxy.token || '',
+    token: proxy.token || IMAGE_PROXY_DEFAULT.token,
     expire_hours: Number(proxy.expire_hours) > 0 ? Number(proxy.expire_hours) : IMAGE_PROXY_DEFAULT.expire_hours,
     use_for_gemini: proxy.use_for_gemini !== false,
   })
@@ -208,7 +208,7 @@ function normalizeImageProxyPayload() {
   return {
     enabled: !!imageProxy.enabled,
     upload_url: String(imageProxy.upload_url || IMAGE_PROXY_DEFAULT.upload_url).trim() || IMAGE_PROXY_DEFAULT.upload_url,
-    token: String(imageProxy.token || '').trim(),
+    token: String(imageProxy.token || IMAGE_PROXY_DEFAULT.token).trim() || IMAGE_PROXY_DEFAULT.token,
     expire_hours: Number(imageProxy.expire_hours) > 0 ? Number(imageProxy.expire_hours) : IMAGE_PROXY_DEFAULT.expire_hours,
     use_for_gemini: !!imageProxy.use_for_gemini,
   }

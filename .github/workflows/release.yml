@@ -62,19 +62,31 @@ jobs:
         working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish never
+          ORCHESTRATION_API_URL: ${{ secrets.ORCHESTRATION_API_URL || vars.ORCHESTRATION_API_URL }}
+        run: |
+          npx electron-builder --win --publish never `
+            -c.extraMetadata.updateServiceBaseUrl="$env:ORCHESTRATION_API_URL" `
+            -c.extraMetadata.updateAppKey="local-mini-drama-desktop" `
+            -c.extraMetadata.updateChannel="stable" `
+            -c.extraMetadata.updateEnabled=true
 
       - name: Upload Standard Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
-          path: desktop/release/*.exe
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
           retention-days: 7
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/release/*.exe
+          files: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
           generate_release_notes: true
           draft: false
         env:

@@ -3,8 +3,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo">
-          <span class="logo-main">出海短剧工厂</span>
-          <span class="logo-sub">OverseasDrama</span>
+          <img class="logo-mark" src="/app-logo.png" alt="" aria-hidden="true" />
+          <span class="logo-copy">
+            <span class="logo-main">出海短剧工厂</span>
+            <span class="logo-sub">OverseasDrama</span>
+          </span>
         </h1>
         <!-- 公共资源库（左侧，靛紫调） -->
         <div class="header-library">
@@ -845,9 +848,21 @@ onMounted(async () => {
   margin: 0;
   cursor: pointer;
   display: flex;
+  align-items: center;
+  gap: 9px;
+  line-height: 1;
+}
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 8px;
+  box-shadow: 0 0 18px rgba(168, 85, 247, 0.28);
+}
+.logo-copy {
+  display: flex;
   flex-direction: column;
   gap: 1px;
-  line-height: 1;
 }
 .logo-main {
   font-size: 1.1rem;

@@ -1,12 +1,20 @@
 {
   "appId": "com.overseasdrama.desktop",
   "productName": "出海短剧工厂",
+  "electronUpdaterCompatibility": ">=2.16",
+  "extraMetadata": {
+    "updateAppKey": "local-mini-drama-desktop",
+    "updateServiceBaseUrl": "",
+    "updateChannel": "stable",
+    "updateEnabled": true
+  },
   "directories": {
     "output": "release"
   },
   "files": [
     "main.js",
     "package.json",
+    "assets/icons/**/*",
     "backend-app/**/*",
     "node_modules/**/*"
   ],
@@ -33,10 +41,11 @@
   ],
   "mac": {
     "target": [
-      { "target": "dmg", "arch": ["x64", "arm64"] }
+      { "target": "dmg", "arch": ["x64", "arm64"] },
+      { "target": "zip", "arch": ["x64", "arm64"] }
     ],
     "category": "public.app-category.entertainment",
-    "icon": null,
+    "icon": "assets/icons/icon.icns",
     "identity": null
   },
   "dmg": {

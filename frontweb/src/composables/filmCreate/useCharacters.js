@@ -31,6 +31,41 @@ export function useCharacters(deps) {
     return new File([u8arr], filename || 'reference.png', { type: mime })
   }
 
+  function requireCurrentEpisode() {
+    if (currentEpisodeId.value) return true
+    ElMessage.warning('请先选择或保存当前集')
+    return false
+  }
+
+  function toCharacterSavePayload(char) {
+    const out = {
+      id: char.id,
+      name: char.name || '',
+      role: char.role || undefined,
+      description: char.description || undefined,
+      personality: char.personality || undefined,
+      appearance: char.appearance || undefined,
+    }
+    if (char.image_url) out.image_url = char.image_url
+    if (char.local_path) out.local_path = char.local_path
+    if (char.ref_image) out.ref_image = char.ref_image
+    return out
+  }
+
+  async function uploadAddCharImageIfAny() {
+    const refImg = addCharRefImage.value
+    if (!refImg) return null
+    const file = dataUrlToFile(refImg.dataUrl, refImg.filename || 'reference.png')
+    const uploadRes = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
+    const localPath = uploadRes.local_path || uploadRes.path || ''
+    const url = uploadRes.url || localPath || ''
+    return {
+      image_url: url || undefined,
+      local_path: localPath || undefined,
+      ref_image: localPath || url || undefined,
+    }
+  }
+
   // ── 角色弹窗状态 ─────────────────────────────────────
   const showEditCharacter = ref(false)
   const editCharacterForm = ref(null)
@@ -71,7 +106,7 @@ export function useCharacters(deps) {
 
   // ── 核心函数 ──────────────────────────────────────────
   async function onGenerateCharacters() {
-    if (!store.dramaId) return
+    if (!store.dramaId || !requireCurrentEpisode()) return
     charactersGenerating.value = true
     try {
       const outline =
@@ -95,6 +130,7 @@ export function useCharacters(deps) {
   }
 
   function openAddCharacter() {
+    if (!requireCurrentEpisode()) return
     editCharacterForm.value = {
       name: '',
       role: '',
@@ -172,6 +208,7 @@ export function useCharacters(deps) {
   async function submitEditCharacter() {
     const form = editCharacterForm.value
     if (!form?.name?.trim() || !store.dramaId) return
+    if (!form.id && !requireCurrentEpisode()) return
     editCharacterSaving.value = true
     try {
       if (form.id) {
@@ -187,31 +224,24 @@ export function useCharacters(deps) {
         await saveCharRefImageIfAny(form.id)
         ElMessage.success('角色已保存')
       } else {
-        const existing = (store.drama?.characters || []).map((c) => ({
-          id: c.id,
-          name: c.name || '',
-          role: c.role || undefined,
-          description: c.description || undefined,
-          personality: c.personality || undefined,
-          appearance: c.appearance || undefined,
-          image_url: c.image_url || undefined,
-          local_path: c.local_path || undefined
-        }))
-        await dramaAPI.saveCharacters(store.dramaId, {
-          characters: [...existing, {
-            name: form.name.trim(),
-            role: form.role || undefined,
-            appearance: form.appearance || undefined,
-            personality: form.personality || undefined,
-            description: form.description || undefined
-          }],
-          episode_id: currentEpisodeId.value ?? undefined
-        })
-        await loadDrama()
-        if (addCharRefImage.value) {
-          const newChar = (store.drama?.characters || []).find(c => c.name === form.name.trim())
-          if (newChar?.id) await saveCharRefImageIfAny(newChar.id)
+        const uploadedImage = await uploadAddCharImageIfAny()
+        const existing = (store.currentEpisode?.characters || []).map(toCharacterSavePayload)
+        const nextCharacter = {
+          name: form.name.trim(),
+          role: form.role || undefined,
+          appearance: form.appearance || undefined,
+          personality: form.personality || undefined,
+          description: form.description || undefined
         }
+        if (uploadedImage) {
+          if (uploadedImage.image_url) nextCharacter.image_url = uploadedImage.image_url
+          if (uploadedImage.local_path) nextCharacter.local_path = uploadedImage.local_path
+          if (uploadedImage.ref_image) nextCharacter.ref_image = uploadedImage.ref_image
+        }
+        await dramaAPI.saveCharacters(store.dramaId, {
+          characters: [...existing, nextCharacter],
+          episode_id: currentEpisodeId.value
+        })
         ElMessage.success('角色已添加')
       }
       await loadDrama()
@@ -485,19 +515,10 @@ export function useCharacters(deps) {
   }
 
   async function onAddCharFromLibrary(item) {
-    if (!store.dramaId) return
+    if (!store.dramaId || !requireCurrentEpisode()) return
     addingCharFromLibraryId.value = item.id
     try {
-      const existing = (store.characters || []).map((c) => ({
-        id: c.id,
-        name: c.name || '',
-        role: c.role || undefined,
-        appearance: c.appearance || undefined,
-        personality: c.personality || undefined,
-        description: c.description || undefined,
-        image_url: c.image_url || undefined,
-        local_path: c.local_path || undefined,
-      }))
+      const existing = (store.characters || []).map(toCharacterSavePayload)
       const newCharacters = [...existing]
       const existingChar = newCharacters.find(c => c.name === (item.name || '未命名'))
       if (existingChar) {

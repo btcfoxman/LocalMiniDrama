@@ -3,8 +3,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="router.push('/')">
-          <span class="logo-main">出海短剧工厂</span>
-          <span class="logo-sub">OverseasDrama</span>
+          <img class="logo-mark" src="/app-logo.png" alt="" aria-hidden="true" />
+          <span class="logo-copy">
+            <span class="logo-main">出海短剧工厂</span>
+            <span class="logo-sub">OverseasDrama</span>
+          </span>
         </h1>
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '剧集管理' }}</span>
@@ -1242,12 +1245,24 @@ html.light .drama-detail .header {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 9px;
   line-height: 1;
   transition: filter 0.3s;
 }
 .logo:hover { filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.5)); }
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 8px;
+  box-shadow: 0 0 18px rgba(139, 92, 246, 0.25);
+}
+.logo-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 .logo-main {
   font-size: 1.1rem;
   font-weight: 700;

@@ -29,6 +29,26 @@ export function useProps(deps) {
     return new File([u8arr], filename || 'reference.png', { type: mime })
   }
 
+  function requireCurrentEpisode() {
+    if (currentEpisodeId.value) return true
+    ElMessage.warning('请先选择或保存当前集')
+    return false
+  }
+
+  async function uploadAddPropImageIfAny() {
+    const refImg = addPropAddRefImage.value
+    if (!refImg) return null
+    const file = dataUrlToFile(refImg.dataUrl, refImg.filename || 'reference.png')
+    const uploadRes = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
+    const localPath = uploadRes.local_path || uploadRes.path || ''
+    const url = uploadRes.url || localPath || ''
+    return {
+      image_url: url || undefined,
+      local_path: localPath || undefined,
+      ref_image: localPath || url || undefined,
+    }
+  }
+
   // ── 道具弹窗状态 ──────────────────────────────────────
   const showAddProp = ref(false)
   const addPropSaving = ref(false)
@@ -219,17 +239,26 @@ export function useProps(deps) {
   async function submitAddProp() {
     const name = (addPropForm.value.name || '').trim()
     if (!name || !store.dramaId) return
+    if (!requireCurrentEpisode()) return
     addPropSaving.value = true
     try {
-      await propAPI.create({
+      const uploadedImage = await uploadAddPropImageIfAny()
+      const payload = {
         drama_id: store.dramaId,
-        episode_id: currentEpisodeId.value ?? undefined,
+        episode_id: currentEpisodeId.value,
         name,
         type: addPropForm.value.type?.trim() || undefined,
         description: addPropForm.value.description?.trim() || undefined,
         prompt: addPropForm.value.prompt?.trim() || undefined
-      })
+      }
+      if (uploadedImage) {
+        if (uploadedImage.image_url) payload.image_url = uploadedImage.image_url
+        if (uploadedImage.local_path) payload.local_path = uploadedImage.local_path
+        if (uploadedImage.ref_image) payload.ref_image = uploadedImage.ref_image
+      }
+      await propAPI.create(payload)
       showAddProp.value = false
+      addPropAddRefImage.value = null
       await loadDrama()
       ElMessage.success('道具已添加')
     } catch (e) {

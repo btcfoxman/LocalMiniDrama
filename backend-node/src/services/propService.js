@@ -16,6 +16,7 @@ function listByDramaId(db, dramaId) {
     image_url: r.image_url,
     local_path: r.local_path,
     extra_images: r.extra_images || null,
+    ref_image: r.ref_image || null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   }));
@@ -25,8 +26,8 @@ function create(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
   const info = db.prepare(
-    `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, image_url, local_path, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, image_url, local_path, ref_image, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     req.drama_id,
     episodeId,
@@ -36,6 +37,7 @@ function create(db, log, req) {
     req.prompt ?? null,
     req.image_url ?? null,
     req.local_path ?? null,
+    req.ref_image ?? null,
     now,
     now
   );
@@ -56,6 +58,7 @@ function getById(db, id) {
     image_url: r.image_url,
     local_path: r.local_path,
     extra_images: r.extra_images || null,
+    ref_image: r.ref_image || null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };

@@ -12,6 +12,12 @@ const {
   jwtPartLengths,
 } = require('./klingJwt');
 
+const DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS = 140 * 60;
+const DEFAULT_VIDEO_POLL_INTERVAL_MS = 30 * 1000;
+const DEFAULT_VIDEO_POLL_MAX_ATTEMPTS = Math.ceil(
+  (DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS * 1000) / DEFAULT_VIDEO_POLL_INTERVAL_MS
+);
+
 function getRuntimeStorageConfig() {
   try {
     const { loadConfig } = require('../config');
@@ -3427,7 +3433,15 @@ async function callVideoApi(db, log, opts) {
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
-async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
+async function pollVideoTask(
+  db,
+  log,
+  videoGenId,
+  taskId,
+  config,
+  maxAttempts = DEFAULT_VIDEO_POLL_MAX_ATTEMPTS,
+  intervalMs = DEFAULT_VIDEO_POLL_INTERVAL_MS
+) {
   const provider = (config.provider || '').toLowerCase();
   const originalProtocol = resolveVideoProtocol(config);
   let protocol = originalProtocol;

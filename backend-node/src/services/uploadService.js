@@ -8,6 +8,7 @@ const objectStorage = require('./objectStorageService');
 
 const fsp = fs.promises;
 const DEFAULT_IMAGE_PROXY_UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload';
+const DEFAULT_IMAGE_PROXY_TOKEN = 'test';
 
 function trimValue(value) {
   return value === undefined || value === null ? '' : String(value).trim();
@@ -37,7 +38,7 @@ function normalizeImageProxySettings(input = {}, current = {}) {
   return {
     enabled: boolValue(get('enabled', true), true),
     upload_url: trimValue(get('upload_url', DEFAULT_IMAGE_PROXY_UPLOAD_URL)) || DEFAULT_IMAGE_PROXY_UPLOAD_URL,
-    token: trimValue(get('token')),
+    token: trimValue(get('token', DEFAULT_IMAGE_PROXY_TOKEN)) || DEFAULT_IMAGE_PROXY_TOKEN,
     expire_hours: numberValue(get('expire_hours', 23), 23),
     use_for_gemini: boolValue(get('use_for_gemini', true), true),
   };
