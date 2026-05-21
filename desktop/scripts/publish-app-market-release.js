@@ -78,6 +78,9 @@ function joinUrl(base, key) {
 
 function contentTypeFor(fileName) {
   const lower = fileName.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.ico')) return 'image/x-icon';
+  if (lower.endsWith('.icns')) return 'image/icns';
   if (lower.endsWith('.exe')) return 'application/vnd.microsoft.portable-executable';
   if (lower.endsWith('.dmg')) return 'application/x-apple-diskimage';
   if (lower.endsWith('.zip')) return 'application/zip';
@@ -166,7 +169,7 @@ function createS3Client() {
   });
 }
 
-async function uploadArtifacts(files, options) {
+function createUploadContext() {
   const client = createS3Client();
   const bucket = requiredEnv('OSS_BUCKET');
   const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
@@ -177,10 +180,31 @@ async function uploadArtifacts(files, options) {
       || buildDefaultPublicBase(endpoint, bucket, forcePathStyle),
     'OSS_PUBLIC_BASE_URL'
   );
+  const baseDir = trimSlashes(env('OSS_BASE_DIR', 'app-market'));
+  return { client, bucket, publicBase, baseDir };
+}
 
+async function putOssFile(context, filePath, key, contentType) {
+  const stat = fs.statSync(filePath);
+  const body = fs.readFileSync(filePath);
+  await context.client.send(new PutObjectCommand({
+    Bucket: context.bucket,
+    Key: key,
+    Body: body,
+    ContentLength: stat.size,
+    ContentType: contentType,
+  }));
+  return {
+    key,
+    size: stat.size,
+    downloadUrl: joinUrl(context.publicBase, key),
+  };
+}
+
+async function uploadArtifacts(files, options, context) {
   for (const file of files) {
     const key = [
-      trimSlashes(env('OSS_BASE_DIR', 'app-market')),
+      context.baseDir,
       options.appKey,
       options.channel,
       options.version,
@@ -189,22 +213,38 @@ async function uploadArtifacts(files, options) {
       file.fileName,
     ].filter(Boolean).map(trimSlashes).join('/');
 
-    const body = fs.readFileSync(file.absPath);
-    await client.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: body,
-      ContentLength: file.size,
-      ContentType: contentTypeFor(file.fileName),
-    }));
-
+    const uploaded = await putOssFile(context, file.absPath, key, contentTypeFor(file.fileName));
     Object.assign(file, hashesFor(file.absPath), {
-      key,
-      downloadUrl: joinUrl(publicBase, key),
+      key: uploaded.key,
+      downloadUrl: uploaded.downloadUrl,
       fileType: fileTypeFor(file.fileName),
     });
     console.log(`Uploaded ${file.fileName} -> ${file.downloadUrl}`);
   }
+}
+
+function resolveAppIconPath() {
+  const candidates = [
+    env('APP_MARKET_ICON_PATH'),
+    path.join(rootDir, '..', 'frontweb', 'public', 'favicon.png'),
+    path.join(rootDir, 'assets', 'icons', 'icon.png'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || '';
+}
+
+async function uploadAppIcon(options, context) {
+  const iconPath = resolveAppIconPath();
+  if (!iconPath) return '';
+  const fileName = path.basename(iconPath);
+  const key = [
+    context.baseDir,
+    options.appKey,
+    'icons',
+    fileName,
+  ].filter(Boolean).map(trimSlashes).join('/');
+  const uploaded = await putOssFile(context, iconPath, key, contentTypeFor(fileName));
+  console.log(`Uploaded app icon ${fileName} -> ${uploaded.downloadUrl}`);
+  return uploaded.downloadUrl;
 }
 
 async function publishRelease(payload) {
@@ -252,11 +292,16 @@ async function main() {
   const primary = choosePrimary(files, options.platform, env('APP_MARKET_PRIMARY_PATTERN'));
   if (!primary) throw new Error(`no primary artifact found in ${releaseDir}`);
 
-  await uploadArtifacts(files, options);
+  const uploadContext = createUploadContext();
+  await uploadArtifacts(files, options, uploadContext);
+  const iconUrl = await uploadAppIcon(options, uploadContext);
   for (const file of files) {
     if (!/^https:\/\//i.test(file.downloadUrl)) {
       throw new Error(`download_url must be HTTPS for app-market release: ${file.downloadUrl}`);
     }
+  }
+  if (iconUrl && !/^https:\/\//i.test(iconUrl)) {
+    throw new Error(`icon_url must be HTTPS for app-market release: ${iconUrl}`);
   }
 
   const blockmap = files.find((file) => file.fileName === `${primary.fileName}.blockmap`);
@@ -269,6 +314,7 @@ async function main() {
     app_name: options.appName,
     app_type: options.appType,
     vendor: options.vendor,
+    icon_url: iconUrl || undefined,
     platform: options.platform,
     arch: options.arch,
     channel: options.channel,
@@ -301,7 +347,6 @@ async function main() {
         is_primary: false,
       })),
     metadata: {
-      repository: env('GITHUB_REPOSITORY') || undefined,
       run_id: env('GITHUB_RUN_ID') || undefined,
       ref_name: env('GITHUB_REF_NAME') || undefined,
       primary_file: primary.fileName,
