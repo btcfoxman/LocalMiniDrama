@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { propAPI } from '@/api/props'
 import { propLibraryAPI } from '@/api/propLibrary'
 import { uploadAPI } from '@/api/upload'
+import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership, markAssetInLibrary } from './libraryMembership'
 
 /**
  * 道具管理 Composable
@@ -15,9 +16,10 @@ import { uploadAPI } from '@/api/upload'
  * @param {Function} deps.pollTask
  * @param {Function} deps.pollUntilResourceHasImage
  * @param {Function} deps.hasAssetImage
+ * @param {Function} [deps.getAssetImageModel]
  */
 export function useProps(deps) {
-  const { store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const { store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
 
   function dataUrlToFile(dataUrl, filename) {
     const arr = dataUrl.split(',')
@@ -86,6 +88,7 @@ export function useProps(deps) {
   const addingPropToLibraryId = ref(null)
   const addingPropToMaterialId = ref(null)
   const addingPropFromLibraryId = ref(null)
+  const propMembership = createLibraryMembershipState()
   let propLibraryKeywordTimer = null
 
   // ── 函数 ──────────────────────────────────────────────
@@ -129,6 +132,7 @@ export function useProps(deps) {
       image_url: prop.image_url || '',
       local_path: prop.local_path || '',
       ref_image: prop.ref_image || '',
+      negative_prompt: prop.negative_prompt || '',
     }
     showEditProp.value = true
     if (!prop.prompt && prop.id && prop.description) {
@@ -223,7 +227,8 @@ export function useProps(deps) {
         name: editPropForm.value.name?.trim(),
         type: editPropForm.value.type || undefined,
         description: editPropForm.value.description || undefined,
-        prompt: editPropForm.value.prompt || undefined
+        prompt: editPropForm.value.prompt || undefined,
+        negative_prompt: (editPropForm.value.negative_prompt || '').trim() || null,
       })
       await savePropRefImageIfAny(editPropForm.value.id)
       await loadDrama()
@@ -296,7 +301,7 @@ export function useProps(deps) {
     prop.error_msg = ''
     generatingPropIds.add(prop.id)
     try {
-      const res = await propAPI.generateImage(prop.id, undefined, getSelectedStyle())
+      const res = await propAPI.generateImage(prop.id, getAssetImageModel?.(), getSelectedStyle())
       const taskId = res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama())
@@ -405,6 +410,7 @@ export function useProps(deps) {
     addingPropToLibraryId.value = prop.id
     try {
       await propAPI.addToLibrary(prop.id, {})
+      markAssetInLibrary(propMembership.dramaSourceIds, prop)
       ElMessage.success('已加入本剧道具库')
       if (showPropLibrary.value) loadPropLibraryList()
     } catch (e) {
@@ -419,12 +425,32 @@ export function useProps(deps) {
     addingPropToMaterialId.value = prop.id
     try {
       await propAPI.addToMaterialLibrary(prop.id)
+      markAssetInLibrary(propMembership.materialSourceIds, prop)
       ElMessage.success('已加入全局素材库')
     } catch (e) {
       ElMessage.error(e.message || '加入失败')
     } finally {
       addingPropToMaterialId.value = null
     }
+  }
+
+  async function loadPropLibraryMembership() {
+    await loadLibraryMembership({
+      api: propLibraryAPI,
+      sourceType: 'prop',
+      assets: store.props || [],
+      dramaId: dramaId.value,
+      dramaSourceIds: propMembership.dramaSourceIds,
+      materialSourceIds: propMembership.materialSourceIds,
+    })
+  }
+
+  function isPropInLibrary(prop) {
+    return hasAssetInLibrary(propMembership.dramaSourceIds, prop)
+  }
+
+  function isPropInMaterialLibrary(prop) {
+    return hasAssetInLibrary(propMembership.materialSourceIds, prop)
   }
 
   async function onAddPropFromLibrary(item) {
@@ -528,6 +554,9 @@ export function useProps(deps) {
     onClosePropDialog,
     onDeleteProp,
     onGeneratePropImage,
+    loadPropLibraryMembership,
+    isPropInLibrary,
+    isPropInMaterialLibrary,
     loadPropLibraryList,
     debouncedLoadPropLibrary,
     openEditPropLibrary,

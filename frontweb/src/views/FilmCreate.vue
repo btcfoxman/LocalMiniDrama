@@ -169,14 +169,16 @@
             <el-option label="喜剧" value="comedy" />
             <el-option label="冒险" value="adventure" />
           </el-select>
-          <el-select v-model="storyEpisodeCount" placeholder="生成集数" style="width: 120px">
-            <el-option label="生成 1 集" :value="1" />
-            <el-option label="生成 2 集" :value="2" />
-            <el-option label="生成 3 集" :value="3" />
-            <el-option label="生成 4 集" :value="4" />
-            <el-option label="生成 5 集" :value="5" />
-            <el-option label="生成 6 集" :value="6" />
-          </el-select>
+          <span style="font-size: 13px; color: var(--el-text-color-regular); white-space: nowrap; align-self: center;">生成集数</span>
+          <el-input-number
+            v-model="storyEpisodeCount"
+            :min="1"
+            :max="6"
+            :step="1"
+            :precision="0"
+            controls-position="right"
+            style="width: 128px"
+          />
           <el-button type="primary" :loading="storyGenerating" @click="onGenerateStory">
             AI生成剧本
           </el-button>
@@ -247,6 +249,14 @@
             <el-option label="4:3" value="4:3" />
             <el-option label="21:9 宽银幕" value="21:9" />
           </el-select>
+          <el-input
+            v-model="assetImageModel"
+            clearable
+            placeholder="资产生图模型 id（选填）"
+            style="width: 200px"
+            title="填写与「AI 配置」中图片服务一致的模型名/id；与角色/场景/道具编辑里的负面提示词配合时才会传入图生 API"
+            @change="() => saveProjectSettings(false)"
+          />
           <el-select v-model="videoClipDuration" style="width: 105px" @change="() => saveProjectSettings(false)">
             <el-option label="4秒/段" :value="4" />
             <el-option label="5秒/段" :value="5" />
@@ -397,11 +407,11 @@
                     <div class="asset-desc-full">{{ char.appearance || char.description || '暂无描述' }}</div>
                     <div class="asset-btns">
                       <el-button size="small" @click="editCharacter(char)">编辑</el-button>
-                      <el-button size="small" :loading="addingCharToLibraryId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToLibrary(char)">
-                        加入本剧库
+                      <el-button size="small" :type="isCharInLibrary(char) ? 'success' : ''" :loading="addingCharToLibraryId === char.id" :disabled="!hasAssetImage(char) || isCharInLibrary(char)" @click="onAddCharacterToLibrary(char)">
+                        {{ isCharInLibrary(char) ? '已加入本剧库' : '加入本剧库' }}
                       </el-button>
-                      <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
-                        加入素材库
+                      <el-button size="small" :type="isCharInMaterialLibrary(char) ? 'success' : ''" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char) || isCharInMaterialLibrary(char)" @click="onAddCharacterToMaterialLibrary(char)">
+                        {{ isCharInMaterialLibrary(char) ? '已加入素材库' : '加入素材库' }}
                       </el-button>
                       <span v-if="canUseSd2Assets && char.seedance2_asset?.status !== 'active'" class="sd2-cert-btn-wrap">
                         <el-button
@@ -541,11 +551,11 @@
                     <div class="asset-desc-full">{{ prop.description || prop.prompt || '暂无描述' }}</div>
                     <div class="asset-btns">
                       <el-button size="small" @click="editProp(prop)">编辑</el-button>
-                      <el-button size="small" :loading="addingPropToLibraryId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToLibrary(prop)">
-                        加入本剧库
+                      <el-button size="small" :type="isPropInLibrary(prop) ? 'success' : ''" :loading="addingPropToLibraryId === prop.id" :disabled="!hasAssetImage(prop) || isPropInLibrary(prop)" @click="onAddPropToLibrary(prop)">
+                        {{ isPropInLibrary(prop) ? '已加入本剧库' : '加入本剧库' }}
                       </el-button>
-                      <el-button size="small" :loading="addingPropToMaterialId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToMaterialLibrary(prop)">
-                        加入素材库
+                      <el-button size="small" :type="isPropInMaterialLibrary(prop) ? 'success' : ''" :loading="addingPropToMaterialId === prop.id" :disabled="!hasAssetImage(prop) || isPropInMaterialLibrary(prop)" @click="onAddPropToMaterialLibrary(prop)">
+                        {{ isPropInMaterialLibrary(prop) ? '已加入素材库' : '加入素材库' }}
                       </el-button>
                     </div>
                   </div>
@@ -618,11 +628,11 @@
                     <div class="asset-desc-full">{{ scene.description || scene.prompt || scene.time || '暂无描述' }}</div>
                     <div class="asset-btns">
                       <el-button size="small" @click="editScene(scene)">编辑</el-button>
-                      <el-button size="small" :loading="addingSceneToLibraryId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToLibrary(scene)">
-                        加入本剧库
+                      <el-button size="small" :type="isSceneInLibrary(scene) ? 'success' : ''" :loading="addingSceneToLibraryId === scene.id" :disabled="!hasAssetImage(scene) || isSceneInLibrary(scene)" @click="onAddSceneToLibrary(scene)">
+                        {{ isSceneInLibrary(scene) ? '已加入本剧库' : '加入本剧库' }}
                       </el-button>
-                      <el-button size="small" :loading="addingSceneToMaterialId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToMaterialLibrary(scene)">
-                        加入素材库
+                      <el-button size="small" :type="isSceneInMaterialLibrary(scene) ? 'success' : ''" :loading="addingSceneToMaterialId === scene.id" :disabled="!hasAssetImage(scene) || isSceneInMaterialLibrary(scene)" @click="onAddSceneToMaterialLibrary(scene)">
+                        {{ isSceneInMaterialLibrary(scene) ? '已加入素材库' : '加入素材库' }}
                       </el-button>
                     </div>
                     <div v-if="getSceneAffectedStoryboards(scene.id).length" class="asset-storyboard-link">
@@ -1205,6 +1215,13 @@
                   class="sb-video-player"
                   preload="metadata"
                 />
+                <div
+                  v-else
+                  class="sb-video-error"
+                  :title="getSbVideoError(sb.id) || '视频地址无效'"
+                >
+                  {{ getSbVideoError(sb.id) || '视频地址无效，请重新生成' }}
+                </div>
                 <span v-if="generatingSbVideoIds.has(sb.id)" class="sb-video-regenerating-overlay">
                   <el-icon class="is-loading"><Loading /></el-icon>
                   正在重新生成...
@@ -1529,6 +1546,14 @@
             />
           </div>
         </el-form-item>
+        <el-form-item label="负面提示词">
+          <el-input
+            v-model="editCharacterForm.negative_prompt"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="选填；与本集配置中的「资产生图模型 id」同时填写且此处非空时，随图生请求传入"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showEditCharacter = false">取消</el-button>
@@ -1616,6 +1641,14 @@
             />
           </div>
         </el-form-item>
+        <el-form-item label="负面提示词">
+          <el-input
+            v-model="editPropForm.negative_prompt"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="选填；与本集配置中的「资产生图模型 id」同时填写且此处非空时，随图生请求传入"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showEditProp = false">取消</el-button>
@@ -1678,6 +1711,14 @@
               style="font-size:12px"
             />
           </div>
+        </el-form-item>
+        <el-form-item label="负面提示词">
+          <el-input
+            v-model="editSceneForm.negative_prompt"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="选填；与本集配置中的「资产生图模型 id」同时填写且此处非空时，随图生请求传入"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -2144,6 +2185,26 @@
       </template>
     </el-dialog>
 
+    <!-- 已有剧本时：覆盖或追加新集 -->
+    <el-dialog v-model="showGenerateStoryModeDialog" title="已有剧本" width="480px" destroy-on-close>
+      <p style="margin: 0 0 14px; font-size: 14px; color: var(--el-text-color-regular); line-height: 1.5">
+        本剧已有剧集剧本，请选择本次生成结果的保存方式：
+      </p>
+      <el-radio-group v-model="generateStorySaveMode" class="generate-story-mode-radios">
+        <!-- Element Plus 2.6+：选项值用 value，勿仅用 label -->
+        <el-radio value="overwrite" class="generate-story-mode-radio">
+          覆盖：丢弃原有剧集，仅保留本次 AI 生成的集数
+        </el-radio>
+        <el-radio value="append" class="generate-story-mode-radio">
+          新增：保留原有剧集，在末尾追加本次生成的新集
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="showGenerateStoryModeDialog = false">取消</el-button>
+        <el-button type="primary" :loading="storyGenerating" @click="onConfirmGenerateStoryMode">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- AI 配置弹窗（不跳转，避免本页内容丢失） -->
     <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close class="ai-config-dialog">
       <AIConfigContent v-if="showAiConfigDialog" />
@@ -2220,10 +2281,13 @@ const showAiConfigDialog = ref(false)
 const storyInput = ref('')
 const storyStyle = ref('')
 const storyType = ref('')
-const storyEpisodeCount = ref(1)
+const storyEpisodeCount = ref(6)
 const storyGenerating = ref(false)
 // P1-2: 小说导入
 const showNovelImport = ref(false)
+const showGenerateStoryModeDialog = ref(false)
+/** 已有剧本时：overwrite=整剧替换，append=保留旧集并追加 */
+const generateStorySaveMode = ref('overwrite')
 const novelImportMode = ref('text')
 const novelText = ref('')
 const novelFileName = ref('')
@@ -2240,6 +2304,12 @@ const scriptStoryboardStyle = ref('')
 const scriptGenerating = ref(false)
 const generationStyle = ref('')
 const projectAspectRatio = ref('16:9')
+/** 与资产「负面提示词」配合：非空时作为图生请求的 model 传入后端（与 YAML 默认图模区分） */
+const assetImageModel = ref('')
+function getAssetImageModel() {
+  const m = (assetImageModel.value || '').trim()
+  return m || undefined
+}
 const videoClipDuration = ref(5)
 
 /** 根据 value 查找样式选项对象 */
@@ -2328,6 +2398,8 @@ const pipelineCountdown = ref(0)      // 剩余秒数，0 表示不在倒计时
 const pipelineCountdownMsg = ref('')  // 倒计时说明文字
 const pipelineConcurrency = ref(3)
 const pipelineVideoConcurrency = ref(3)
+/** 与后端 config video.generation_timeout_minutes 一致，用于视频类任务轮询 */
+const videoTaskPollTimeoutMinutes = ref(30)
 const pipelineActiveTasks = reactive(new Set())
 
 async function loadPipelineConcurrency() {
@@ -2335,6 +2407,7 @@ async function loadPipelineConcurrency() {
     const res = await generationSettingsAPI.get()
     pipelineConcurrency.value = Math.max(1, Number(res?.concurrency) || 3)
     pipelineVideoConcurrency.value = Math.max(1, Number(res?.video_concurrency) || 3)
+    videoTaskPollTimeoutMinutes.value = Math.max(1, Number(res?.video_generation_timeout_minutes) || 30)
   } catch (_) {}
 }
 
@@ -2385,10 +2458,11 @@ const {
   charRoleLabel, onGenerateCharacters, openAddCharacter, stopCharacterPromptPoll, editCharacter,
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
   extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage,
+  loadCharLibraryMembership, isCharInLibrary, isCharInMaterialLibrary,
   loadCharLibraryList, debouncedLoadCharLibrary, openEditCharLibrary, submitEditCharLibrary,
   onDeleteCharLibrary, onAddCharacterToLibrary, onAddCharacterToMaterialLibrary, onSd2CertifyCharacter,
   onSd2CertifyRefresh, openCharSd2CertDialog, onAddCharFromLibrary,
-} = useCharacters({ store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage })
+} = useCharacters({ store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage })
 
 // ── Composable: Props ──────────────────────────────────
 const {
@@ -2403,10 +2477,11 @@ const {
   onExtractProps, stopPropPromptPoll, editProp, doGeneratePropPrompt, savePropRefImageIfAny,
   clearPropRefImage, doExtractPropFromImage, submitEditProp, submitAddProp,
   onClosePropDialog, onDeleteProp, onGeneratePropImage,
+  loadPropLibraryMembership, isPropInLibrary, isPropInMaterialLibrary,
   loadPropLibraryList, debouncedLoadPropLibrary, openEditPropLibrary, submitEditPropLibrary,
   onDeletePropLibrary, onAddPropToLibrary, onAddPropToMaterialLibrary, onAddPropFromLibrary,
   doExtractFromRef2,
-} = usePropsComposable({ store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage })
+} = usePropsComposable({ store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage })
 
 // ── Composable: Scenes ─────────────────────────────────
 const {
@@ -2420,9 +2495,10 @@ const {
   onExtractScenes, openAddScene, stopScenePromptPoll, editScene, doGenerateScenePrompt,
   saveSceneRefImageIfAny, clearSceneRefImage, doExtractSceneFromImage, submitEditScene,
   onCloseSceneDialog, onDeleteScene, onGenerateSceneImage,
+  loadSceneLibraryMembership, isSceneInLibrary, isSceneInMaterialLibrary,
   loadSceneLibraryList, debouncedLoadSceneLibrary, openEditSceneLibrary, submitEditSceneLibrary,
   onDeleteSceneLibrary, onAddSceneToLibrary, onAddSceneToMaterialLibrary, onAddSceneFromLibrary,
-} = useScenes({ store, dramaId, currentEpisodeId, getSelectedStyle, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI })
+} = useScenes({ store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI })
 
 
 
@@ -3006,12 +3082,18 @@ function assetVideoUrl(item) {
   if (localPath) return '/static/' + localPath.replace(/^\//, '')
   return ''
 }
+/** 远程视频须为 http(s)，避免上游 FAILURE 时把错误文案写入 video_url */
+function isHttpVideoUrl(url) {
+  if (!url || typeof url !== 'string') return false
+  const t = url.trim()
+  return t.startsWith('http://') || t.startsWith('https://')
+}
 /** 列表项是否具备可播放地址（避免仅有空白 local_path 时外层有卡片、内层无 <video>） */
 function recordHasPlayableVideoUrl(i) {
   if (!i) return false
-  const u = i.video_url && String(i.video_url).trim()
   const lp = i.local_path && String(i.local_path).trim()
-  return !!(u || lp)
+  if (lp) return true
+  return isHttpVideoUrl(i.video_url)
 }
 /** 主播放器强制随记录/地址重建，避免重新生成后 <video> 仍缓存旧 src */
 function sbMainVideoPlayerKey(sbId) {
@@ -3093,6 +3175,14 @@ function getSbVideoError(storyboardId) {
   if (!Array.isArray(list) || list.length === 0) return ''
   const hasCompleted = list.some((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
   if (hasCompleted) return ''
+  const bogusCompleted = list.find(
+    (i) => i.status === 'completed' && i.video_url && !recordHasPlayableVideoUrl(i)
+  )
+  if (bogusCompleted) {
+    const u = String(bogusCompleted.video_url || '').trim()
+    if (u) return u
+    if (bogusCompleted.error_msg) return bogusCompleted.error_msg
+  }
   const failed = list.filter((i) => i.status === 'failed' && i.error_msg)
   if (failed.length === 0) return ''
   return failed[0].error_msg
@@ -3408,6 +3498,14 @@ function onEpisodeSelect(epId) {
   loadStoryboardMedia()
 }
 
+async function refreshLibraryMembership() {
+  await Promise.allSettled([
+    loadCharLibraryMembership(),
+    loadPropLibraryMembership(),
+    loadSceneLibraryMembership(),
+  ])
+}
+
 async function loadDrama() {
   if (!store.dramaId) return
   try {
@@ -3420,6 +3518,7 @@ async function loadDrama() {
     storyType.value = d.genre || ''
     generationStyle.value = d.style || ''
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
+    assetImageModel.value = (d.metadata && d.metadata.asset_image_model) ? String(d.metadata.asset_image_model) : ''
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = await fetchStoryboardUniversalOmniForLoad(d.metadata)
@@ -3441,6 +3540,7 @@ async function loadDrama() {
       scriptTitle.value = ''
       selectedEpisodeId.value = null
     }
+    await refreshLibraryMembership()
     syncStoryboardStateFromEpisode(ep)
     await loadStoryboardMedia()
   } catch (e) {
@@ -3688,6 +3788,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
   const metadata = {
     story_style: storyStyle.value || undefined,
     aspect_ratio: projectAspectRatio.value || '16:9',
+    asset_image_model: (assetImageModel.value || '').trim() || undefined,
     video_clip_duration: videoClipDuration.value || 5,
     storyboard_include_narration: !!storyboardIncludeNarration.value,
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
@@ -3711,16 +3812,48 @@ async function onGenerateStory() {
     ElMessage.warning('请先输入故事梗概')
     return
   }
+  const existingDramaId = store.dramaId
+  if (existingDramaId) {
+    const eps = store.drama?.episodes || []
+    const hasExistingScript = eps.some((ep) => String(ep.script_content ?? '').trim().length > 0)
+    if (hasExistingScript) {
+      generateStorySaveMode.value = 'overwrite'
+      showGenerateStoryModeDialog.value = true
+      return
+    }
+  }
+  await executeGenerateStory({ append: false })
+}
+
+async function onConfirmGenerateStoryMode() {
+  const append = generateStorySaveMode.value === 'append'
+  showGenerateStoryModeDialog.value = false
+  await executeGenerateStory({ append })
+}
+
+/**
+ * @param {{ append: boolean }} opts append=true 时在保留当前 store 中剧集的前提下追加新集；false 为整剧按本次生成结果替换
+ */
+async function executeGenerateStory(opts) {
+  const append = !!opts?.append
+  const text = (storyInput.value || '').trim()
+  if (!text) {
+    ElMessage.warning('请先输入故事梗概')
+    return
+  }
   storyGenerating.value = true
   try {
+    const rawEp = Number(storyEpisodeCount.value)
+    const episodeCount = Number.isFinite(rawEp)
+      ? Math.min(6, Math.max(1, Math.round(rawEp)))
+      : 6
     const res = await generationAPI.generateStory({
       premise: text,
       style: storyStyle.value || undefined,
       type: storyType.value || undefined,
-      episode_count: storyEpisodeCount.value || 1,
+      episode_count: episodeCount,
     })
 
-    // 后端现在统一返回 { episodes: [...] }
     const episodes = res?.episodes || []
     if (episodes.length === 0) {
       ElMessage.error('AI 未能生成剧本，请重试')
@@ -3731,7 +3864,6 @@ async function onGenerateStory() {
     try {
       let dramaId = store.dramaId
       if (!dramaId) {
-        // 创建项目
         const drama = await dramaAPI.create({
           title: scriptTitle.value || '新故事',
           description: text,
@@ -3750,16 +3882,56 @@ async function onGenerateStory() {
         }
       }
 
-      // 保存所有生成的集数
-      const epPayload = episodes.map((ep, i) => ({
-        episode_number: ep.episode ?? i + 1,
-        title: ep.title || `第${ep.episode ?? i + 1}集`,
-        script_content: ep.content || '',
-      }))
-      savedCurrentEpisodeNumber.value = 1
+      let existingList = [...(store.drama?.episodes || [])].sort(
+        (a, b) => (Number(a.episode_number) || 0) - (Number(b.episode_number) || 0)
+      )
+      if (append && dramaId) {
+        try {
+          const fresh = await dramaAPI.get(dramaId)
+          const serverEps = [...(fresh.episodes || [])].sort(
+            (a, b) => (Number(a.episode_number) || 0) - (Number(b.episode_number) || 0)
+          )
+          if (serverEps.length > 0) existingList = serverEps
+        } catch (_) {
+          /* 拉取失败时仍用当前 store 中的列表 */
+        }
+      }
+      let epPayload
+      let selectEpisodeNumber = 1
+
+      if (append && dramaId && existingList.length > 0) {
+        const maxNum = Math.max(0, ...existingList.map((e) => Number(e.episode_number) || 0))
+        const kept = existingList.map((ep) => ({
+          episode_number: Number(ep.episode_number) || 0,
+          title: ep.title || '',
+          script_content: ep.script_content ?? '',
+          description: ep.description ?? null,
+          duration: ep.duration ?? 0,
+        }))
+        const appended = episodes.map((ep, i) => ({
+          episode_number: maxNum + i + 1,
+          title: ep.title || `第${maxNum + i + 1}集`,
+          script_content: ep.content || '',
+          description: ep.description ?? null,
+          duration: ep.duration ?? 0,
+        }))
+        epPayload = [...kept, ...appended]
+        selectEpisodeNumber = maxNum + 1
+        savedCurrentEpisodeNumber.value = selectEpisodeNumber
+      } else {
+        epPayload = episodes.map((ep, i) => ({
+          episode_number: ep.episode ?? i + 1,
+          title: ep.title || `第${ep.episode ?? i + 1}集`,
+          script_content: ep.content || '',
+          description: ep.description ?? null,
+          duration: ep.duration ?? 0,
+        }))
+        savedCurrentEpisodeNumber.value = 1
+        selectEpisodeNumber = 1
+      }
+
       await dramaAPI.saveEpisodes(dramaId, epPayload)
 
-      // 保存梗概
       await dramaAPI.saveOutline(dramaId, {
         summary: text,
         genre: storyType.value || undefined,
@@ -3773,15 +3945,20 @@ async function onGenerateStory() {
 
       await loadDrama()
 
-      // 默认选中第 1 集
-      const firstEp = (store.drama?.episodes || [])[0]
-      if (firstEp) {
-        selectedEpisodeId.value = firstEp.id
-        onEpisodeSelect(firstEp.id)
+      const epList = store.drama?.episodes || []
+      const targetEp =
+        epList.find((e) => Number(e.episode_number) === selectEpisodeNumber) || epList[0]
+      if (targetEp) {
+        selectedEpisodeId.value = targetEp.id
+        onEpisodeSelect(targetEp.id)
       }
 
       const n = episodes.length
-      ElMessage.success(n > 1 ? `剧本已生成，共 ${n} 集，已默认选中第1集` : '剧本已生成并已保存')
+      if (append && existingList.length > 0) {
+        ElMessage.success(n > 1 ? `已追加 ${n} 集，已定位到新增的第一集` : '已追加 1 集')
+      } else {
+        ElMessage.success(n > 1 ? `剧本已生成，共 ${n} 集，已默认选中第1集` : '剧本已生成并已保存')
+      }
     } catch (e) {
       ElMessage.error(e.message || '保存剧本失败')
     } finally {
@@ -4997,7 +5174,9 @@ async function onGenerateSbVideo(sb) {
       duration: videoClipDuration.value || undefined,
     })
     if (res?.task_id) {
-      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), {
+        timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+      })
       if (pollRes?.status === 'failed') {
         sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
       } else if (pollRes?.status === 'completed') {
@@ -5285,7 +5464,9 @@ async function startBatchVideoGeneration() {
             duration: videoClipDuration.value || undefined,
           })
           if (res?.task_id) {
-            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), {
+              timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+            })
             if (pollRes?.status === 'failed') {
               batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
               batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
@@ -5341,7 +5522,9 @@ async function onGenerateVideo() {
     if (result?.task_id != null) {
       store.setVideoProgress(10)
       ElMessage.success(result?.message || '视频合成任务已提交，请稍后查看')
-      const pollResult = await pollTask(result.task_id, () => loadDrama())
+      const pollResult = await pollTask(result.task_id, () => loadDrama(), {
+        timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+      })
       await loadDrama()
       if (pollResult?.status === 'completed') {
         store.setVideoProgress(100)
@@ -5382,9 +5565,16 @@ async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs =
   }
 }
 
-function pollTask(taskId, onDone) {
-  const maxAttempts = 450  // 450 × 2s = 15 分钟，足够复杂剧本生成
-  const interval = 2000
+/** 轮询异步任务。opts.timeoutMinutes：视频类任务传 videoTaskPollTimeoutMinutes，缺省 15 分钟（分镜/图片等） */
+const DEFAULT_TASK_POLL_MINUTES = 15
+
+function pollTask(taskId, onDone, opts = {}) {
+  const interval = opts.intervalMs ?? 2000
+  const timeoutMinutes =
+    opts.timeoutMinutes != null && Number.isFinite(opts.timeoutMinutes) && opts.timeoutMinutes > 0
+      ? opts.timeoutMinutes
+      : DEFAULT_TASK_POLL_MINUTES
+  const maxAttempts = Math.max(1, Math.ceil((timeoutMinutes * 60 * 1000) / interval))
   let attempts = 0
   return new Promise((resolve) => {
     const tick = async () => {
@@ -5406,7 +5596,7 @@ function pollTask(taskId, onDone) {
       }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        const timeoutMsg = '分镜生成任务已超时（超过15分钟），请刷新页面查看是否已完成'
+        const timeoutMsg = `任务已超时（超过 ${timeoutMinutes} 分钟），请刷新页面查看是否已完成`
         ElMessage.warning(timeoutMsg)
         resolve({ status: 'timeout', error: timeoutMsg })
       }
@@ -5416,9 +5606,13 @@ function pollTask(taskId, onDone) {
 }
 
 /** 一键生成视频：暂停时等待，返回 { paused: true } 表示被暂停中断 */
-function pollTaskWithPause(taskId, onDone) {
-  const maxAttempts = 450  // 450 × 2s = 15 分钟
-  const interval = 2000
+function pollTaskWithPause(taskId, onDone, opts = {}) {
+  const interval = opts.intervalMs ?? 2000
+  const timeoutMinutes =
+    opts.timeoutMinutes != null && Number.isFinite(opts.timeoutMinutes) && opts.timeoutMinutes > 0
+      ? opts.timeoutMinutes
+      : DEFAULT_TASK_POLL_MINUTES
+  const maxAttempts = Math.max(1, Math.ceil((timeoutMinutes * 60 * 1000) / interval))
   let attempts = 0
   return new Promise((resolve) => {
     const tick = async () => {
@@ -5443,7 +5637,7 @@ function pollTaskWithPause(taskId, onDone) {
       }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        resolve({ error: '任务查询超时（超过15分钟）' })
+        resolve({ error: `任务查询超时（超过 ${timeoutMinutes} 分钟）` })
       }
     }
     setTimeout(tick, interval)
@@ -5736,7 +5930,7 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '角色图 ' + (char.name || char.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await characterAPI.generateImage(char.id, undefined, style)
+            const res = await characterAPI.generateImage(char.id, getAssetImageModel(), style)
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -5771,7 +5965,7 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '场景图 ' + (scene.location || scene.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style })
+            const res = await sceneAPI.generateImage({ scene_id: scene.id, model: getAssetImageModel(), style })
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -5806,7 +6000,7 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+            const res = await propAPI.generateImage(prop.id, getAssetImageModel(), style)
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -5923,7 +6117,9 @@ async function runOneClickPipeline(textOnly = false) {
               duration: videoClipDuration.value || undefined,
             })
             if (res?.task_id) {
-              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), {
+                timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+              })
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else await loadSingleStoryboardMedia(sb.id)
@@ -5942,7 +6138,9 @@ async function runOneClickPipeline(textOnly = false) {
     try {
       const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
       if (result?.task_id != null) {
-        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
+        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama(), {
+          timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+        })
         if (pollResult?.paused) { await waitForResume(); return }
         if (pollResult?.error) addPipelineError('合成整集视频', pollResult.error)
         else await pipelineRest()
@@ -6015,7 +6213,7 @@ async function runRepairPipeline() {
         await checkPause()
         const stepName = '角色图 ' + (char.name || char.id)
         const ok = await pipelineWithRetry(stepName, async () => {
-          const res = await characterAPI.generateImage(char.id, undefined, style)
+          const res = await characterAPI.generateImage(char.id, getAssetImageModel(), style)
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
             const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -6063,7 +6261,7 @@ async function runRepairPipeline() {
         await checkPause()
         const stepName = '场景图 ' + (scene.location || scene.id)
         const ok = await pipelineWithRetry(stepName, async () => {
-          const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style })
+          const res = await sceneAPI.generateImage({ scene_id: scene.id, model: getAssetImageModel(), style })
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
             const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -6113,7 +6311,7 @@ async function runRepairPipeline() {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+            const res = await propAPI.generateImage(prop.id, getAssetImageModel(), style)
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -6239,7 +6437,9 @@ async function runRepairPipeline() {
             duration: videoClipDuration.value || undefined,
           })
           if (res?.task_id) {
-            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), {
+              timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+            })
             if (result?.paused) return { paused: true }
             if (result?.error) throw new Error(result.error)
           } else await loadSingleStoryboardMedia(sb.id)
@@ -6255,7 +6455,9 @@ async function runRepairPipeline() {
     try {
       const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
       if (result?.task_id != null) {
-        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
+        const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama(), {
+          timeoutMinutes: videoTaskPollTimeoutMinutes.value,
+        })
         if (pollResult?.paused) { await waitForResume(); return }
         if (pollResult?.error) addPipelineError('生成整集视频', pollResult.error)
         else await pipelineRest()
@@ -6880,6 +7082,23 @@ html.light .section-title { color: #1e1b4b; }
   color: var(--el-text-color-primary);
   white-space: nowrap;
   font-weight: 600;
+}
+.generate-story-mode-radios {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+.generate-story-mode-radios :deep(.generate-story-mode-radio) {
+  margin-right: 0;
+  height: auto;
+  align-items: flex-start;
+  white-space: normal;
+}
+.generate-story-mode-radios :deep(.generate-story-mode-radio .el-radio__label) {
+  white-space: normal;
+  line-height: 1.45;
 }
 .pipeline-status {
   margin-top: 12px;

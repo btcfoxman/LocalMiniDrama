@@ -12,6 +12,7 @@ server:
     - http://localhost:5173
   read_timeout: 600
   write_timeout: 600
+  insecure_tls: true
 database:
   type: sqlite
   path: ./data/drama_generator.db
@@ -37,6 +38,9 @@ image_proxy:
   token: test
   expire_hours: 23
   use_for_gemini: true
+# 异步视频任务轮询总超时（分钟）；省略或 ≤0 时默认 30
+video:
+  generation_timeout_minutes: 30
 ai:
   default_text_provider: openai
   default_image_provider: openai

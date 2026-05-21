@@ -5,6 +5,7 @@ import { characterLibraryAPI } from '@/api/characterLibrary'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
 import { uploadAPI } from '@/api/upload'
+import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership, markAssetInLibrary } from './libraryMembership'
 
 /**
  * 角色管理 Composable
@@ -17,9 +18,10 @@ import { uploadAPI } from '@/api/upload'
  * @param {Function} deps.pollTask - 轮询异步任务
  * @param {Function} deps.pollUntilResourceHasImage - 等待资源有图片
  * @param {Function} deps.hasAssetImage - 判断资源是否有图片
+ * @param {Function} [deps.getAssetImageModel] - 本集配置的资产生图模型 id（非空时与资产负面词一并传给后端）
  */
 export function useCharacters(deps) {
-  const { store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const { store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
 
   function dataUrlToFile(dataUrl, filename) {
     const arr = dataUrl.split(',')
@@ -49,6 +51,7 @@ export function useCharacters(deps) {
     if (char.image_url) out.image_url = char.image_url
     if (char.local_path) out.local_path = char.local_path
     if (char.ref_image) out.ref_image = char.ref_image
+    if (char.negative_prompt) out.negative_prompt = char.negative_prompt
     return out
   }
 
@@ -98,6 +101,7 @@ export function useCharacters(deps) {
   const sd2CertifyingId = ref(null)
   const showCharSd2Cert = ref(false)
   const charSd2CertPayload = ref(null)
+  const charMembership = createLibraryMembershipState()
   let charLibraryKeywordTimer = null
 
   // ── 常量 ──────────────────────────────────────────────
@@ -137,7 +141,8 @@ export function useCharacters(deps) {
       appearance: '',
       personality: '',
       description: '',
-      polished_prompt: ''
+      polished_prompt: '',
+      negative_prompt: '',
     }
     showEditCharacter.value = true
   }
@@ -164,6 +169,7 @@ export function useCharacters(deps) {
       ref_image: char.ref_image || '',
       identity_anchors: char.identity_anchors || '',
       stages: char.stages ? (typeof char.stages === 'string' ? char.stages : JSON.stringify(char.stages, null, 2)) : '',
+      negative_prompt: char.negative_prompt || '',
     }
     showEditCharacter.value = true
     if (!char.polished_prompt && char.id && (char.appearance || char.description)) {
@@ -219,7 +225,8 @@ export function useCharacters(deps) {
           personality: form.personality || undefined,
           description: form.description || undefined,
           polished_prompt: form.polished_prompt || undefined,
-          stages: form.stages ? form.stages.trim() || undefined : undefined
+          stages: form.stages ? form.stages.trim() || undefined : undefined,
+          negative_prompt: (form.negative_prompt || '').trim() || null,
         })
         await saveCharRefImageIfAny(form.id)
         ElMessage.success('角色已保存')
@@ -231,7 +238,8 @@ export function useCharacters(deps) {
           role: form.role || undefined,
           appearance: form.appearance || undefined,
           personality: form.personality || undefined,
-          description: form.description || undefined
+          description: form.description || undefined,
+          negative_prompt: (form.negative_prompt || '').trim() || null,
         }
         if (uploadedImage) {
           if (uploadedImage.image_url) nextCharacter.image_url = uploadedImage.image_url
@@ -328,7 +336,7 @@ export function useCharacters(deps) {
     char.error_msg = ''
     generatingCharIds.add(char.id)
     try {
-      const res = await characterAPI.generateImage(char.id, undefined, getSelectedStyle())
+      const res = await characterAPI.generateImage(char.id, getAssetImageModel?.(), getSelectedStyle())
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama())
@@ -437,6 +445,7 @@ export function useCharacters(deps) {
     addingCharToLibraryId.value = char.id
     try {
       await characterAPI.addToLibrary(char.id, {})
+      markAssetInLibrary(charMembership.dramaSourceIds, char)
       ElMessage.success('已加入本剧角色库')
       if (showCharLibrary.value) loadCharLibraryList()
     } catch (e) {
@@ -451,6 +460,7 @@ export function useCharacters(deps) {
     addingCharToMaterialId.value = char.id
     try {
       await characterAPI.addToMaterialLibrary(char.id)
+      markAssetInLibrary(charMembership.materialSourceIds, char)
       ElMessage.success('已加入全局素材库')
     } catch (e) {
       ElMessage.error(e.message || '加入失败')
@@ -512,6 +522,25 @@ export function useCharacters(deps) {
   function openCharSd2CertDialog(char) {
     charSd2CertPayload.value = char.seedance2_asset ? { ...char.seedance2_asset } : null
     showCharSd2Cert.value = true
+  }
+
+  async function loadCharLibraryMembership() {
+    await loadLibraryMembership({
+      api: characterLibraryAPI,
+      sourceType: 'character',
+      assets: store.characters || [],
+      dramaId: dramaId.value,
+      dramaSourceIds: charMembership.dramaSourceIds,
+      materialSourceIds: charMembership.materialSourceIds,
+    })
+  }
+
+  function isCharInLibrary(char) {
+    return hasAssetInLibrary(charMembership.dramaSourceIds, char)
+  }
+
+  function isCharInMaterialLibrary(char) {
+    return hasAssetInLibrary(charMembership.materialSourceIds, char)
   }
 
   async function onAddCharFromLibrary(item) {
@@ -632,6 +661,9 @@ export function useCharacters(deps) {
     onCloseCharDialog,
     onDeleteCharacter,
     onGenerateCharacterImage,
+    loadCharLibraryMembership,
+    isCharInLibrary,
+    isCharInMaterialLibrary,
     loadCharLibraryList,
     debouncedLoadCharLibrary,
     openEditCharLibrary,

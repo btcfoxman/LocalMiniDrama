@@ -63,6 +63,7 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   // 与角色/场景一致：使用前端「图片生成模型」选择的 model；未传时用 YAML default_image_provider 兜底
   const model = (opts && opts.model) ? String(opts.model).trim() || null : null;
   const preferredProvider = !model && cfg?.ai?.default_image_provider ? cfg.ai.default_image_provider : null;
+  const userNeg = imageClient.resolveAssetUserNegativeForApi(model, prop.negative_prompt);
 
   let result;
   try {
@@ -72,6 +73,7 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       drama_id: prop.drama_id,
       model: model || undefined,
       preferred_provider: preferredProvider || undefined,
+      user_negative_prompt: userNeg || undefined,
     });
   } catch (err) {
     const errMsg = '图片生成请求失败: ' + (err.message || '未知错误');

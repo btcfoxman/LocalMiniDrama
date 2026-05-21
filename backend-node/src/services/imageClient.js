@@ -17,6 +17,20 @@ const IMAGE_HTTP_TIMEOUT_MS = 600000;
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
 const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
 
+function mergeNegativePromptFragments(auto, user) {
+  const a = (auto || '').trim();
+  const u = (user || '').trim();
+  if (a && u) return `${a}, ${u}`;
+  return a || u || '';
+}
+
+/** 角色/场景/道具资产生图：请求里显式传入 model 且资产上存有负面词时，与自动负面片段合并后传给图生 API */
+function resolveAssetUserNegativeForApi(explicitModelName, storedNegative) {
+  const hasModel = explicitModelName != null && String(explicitModelName).trim().length > 0;
+  const neg = storedNegative != null ? String(storedNegative).trim() : '';
+  return hasModel && neg ? neg : '';
+}
+
 // sharp 惰性加载（参考图压缩用，sharp 已在 package.json 中声明）
 let _sharp = null;
 function getSharp() {
@@ -1560,7 +1574,7 @@ async function callGeminiImageApi(db, config, log, opts) {
  * 调用提供商图片生成 API（OpenAI /images/generations 风格 或 通义万象 multimodal-generation）
  * @param {object} db - database
  * @param {object} log - logger
- * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id }
+ * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
 async function callImageApi(db, log, opts) {
@@ -1579,6 +1593,7 @@ async function callImageApi(db, log, opts) {
     files_base_url,
     storage_local_path,
     system_prompt,
+    user_negative_prompt,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
   const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -1627,6 +1642,8 @@ async function callImageApi(db, log, opts) {
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
   const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
   const autoNegativePrompt = (refCountForNeg > 1 || isVolcOrSeedream) ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
+  const userNegFragment = (user_negative_prompt && String(user_negative_prompt).trim()) || '';
+  const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 
   if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
@@ -1634,7 +1651,7 @@ async function callImageApi(db, log, opts) {
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
-      negative_prompt: autoNegativePrompt,
+      negative_prompt: mergedNegativePrompt,
       db,
     });
   }
@@ -1707,7 +1724,7 @@ async function callImageApi(db, log, opts) {
     ...((isVolc || isSeedream) ? { watermark: false } : {}),
     // 多张参考图时加 negative_prompt，防止模型把参考图拼成左右分割的合图
     // Doubao/Seedream 原生支持；通用 OpenAI-compat 接口大多也会接受该字段（不支持的会忽略）
-    ...(autoNegativePrompt ? { negative_prompt: autoNegativePrompt } : {}),
+    ...(mergedNegativePrompt ? { negative_prompt: mergedNegativePrompt } : {}),
     // 参考图字段：volcengine doubao-seedream API 规范使用 image（数组），见官方文档
     ...(resolvedRefs.length > 0 ? { image: resolvedRefs } : {}),
   };
@@ -1798,7 +1815,9 @@ function createAndGenerateImage(db, log, opts) {
     size,
     quality,
     provider,
+    user_negative_prompt,
   } = opts;
+  const negRow = (user_negative_prompt && String(user_negative_prompt).trim()) || null;
   const now = new Date().toISOString();
   const dramaIdNum = Number(drama_id) || 0;
   const charIdNum = character_id != null ? Number(character_id) : null;
@@ -1814,14 +1833,15 @@ function createAndGenerateImage(db, log, opts) {
   let imageGenId;
   try {
     const info = db.prepare(
-      `INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, model, size, quality, status, task_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+      `INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
     ).run(
       dramaIdNum,
       charIdNum,
       sceneIdNum,
       provider || 'openai',
       prompt || '',
+      negRow,
       model || null,
       size || null,
       quality || null,
@@ -1854,6 +1874,7 @@ function createAndGenerateImage(db, log, opts) {
         character_id: character_id,
         image_type,
         image_gen_id: imageGenId,
+        user_negative_prompt: user_negative_prompt || undefined,
       });
       const now2 = new Date().toISOString();
       if (result.error) {
@@ -2029,6 +2050,7 @@ module.exports = {
   getDefaultImageConfig,
   callImageApi,
   createAndGenerateImage,
+  resolveAssetUserNegativeForApi,
   /** 图床 URL 缓存（image_proxy_cache），供 SD2 认证等复用 */
   getProxyCache,
   setProxyCache,

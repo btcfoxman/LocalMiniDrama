@@ -200,6 +200,7 @@ function ensureAllColumns(database) {
     { name: 'ref_image',         type: 'TEXT' },   // 用户上传的参考图（本地相对路径或 URL），独立于 AI 生成的主图
     { name: 'stages',            type: 'TEXT' },   // JSON: 多阶段造型 [{episode_range:[1,3], appearance:"..."}]
     { name: 'seedance2_asset', type: 'TEXT' },   // JSON: 即梦/Seedance2 素材库认证 hub_asset_id / asset_url 等
+    { name: 'negative_prompt', type: 'TEXT' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },
     { name: 'deleted_at',        type: 'TEXT' },
@@ -217,6 +218,7 @@ function ensureAllColumns(database) {
     { name: 'local_path',       type: 'TEXT' },
     { name: 'extra_images',     type: 'TEXT' },
     { name: 'ref_image',        type: 'TEXT' },  // 用户上传的参考图（本地相对路径或 URL）
+    { name: 'negative_prompt',  type: 'TEXT' },
     { name: 'storyboard_count', type: 'INTEGER DEFAULT 0' },
     { name: 'error_msg',        type: 'TEXT' },
     { name: 'status',           type: 'TEXT DEFAULT \'draft\'' },
@@ -237,6 +239,7 @@ function ensureAllColumns(database) {
     { name: 'local_path',   type: 'TEXT' },
     { name: 'extra_images', type: 'TEXT' },
     { name: 'ref_image',    type: 'TEXT' },  // 用户上传的参考图（本地相对路径或 URL）
+    { name: 'negative_prompt', type: 'TEXT' },
     { name: 'error_msg',    type: 'TEXT' },
     { name: 'created_at',   type: 'TEXT' },
     { name: 'updated_at',   type: 'TEXT' },
@@ -403,6 +406,7 @@ function ensureAllColumns(database) {
     { name: 'appearance',        type: 'TEXT' },
     { name: 'tags',              type: 'TEXT' },
     { name: 'source_type',       type: 'TEXT' },
+    { name: 'source_id',         type: 'TEXT' },
     { name: 'identity_anchors',  type: 'TEXT' },   // JSON: 6层视觉锚点（骨相/五官/辨识标记/色值/皮肤/发型）
     { name: 'style_tokens',      type: 'TEXT' },   // 风格词 token 列表
     { name: 'color_palette',     type: 'TEXT' },   // JSON: Hex 色值数组
@@ -424,6 +428,7 @@ function ensureAllColumns(database) {
     { name: 'category',    type: 'TEXT' },
     { name: 'tags',        type: 'TEXT' },
     { name: 'source_type', type: 'TEXT' },
+    { name: 'source_id',   type: 'TEXT' },
     { name: 'created_at',  type: 'TEXT' },
     { name: 'updated_at',  type: 'TEXT' },
     { name: 'deleted_at',  type: 'TEXT' },
@@ -440,6 +445,7 @@ function ensureAllColumns(database) {
     { name: 'category',    type: 'TEXT' },
     { name: 'tags',        type: 'TEXT' },
     { name: 'source_type', type: 'TEXT' },
+    { name: 'source_id',   type: 'TEXT' },
     { name: 'created_at',  type: 'TEXT' },
     { name: 'updated_at',  type: 'TEXT' },
     { name: 'deleted_at',  type: 'TEXT' },

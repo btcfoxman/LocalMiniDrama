@@ -1,3 +1,14 @@
+/** 轮询/同步返回的 video_url 须为 http(s)，避免中转 FAILURE 时 result_url 为错误文案 */
+function resolveRemoteVideoUrl(videoUrl, fallbackError) {
+  if (videoUrl && videoClient.isPlausibleHttpVideoUrl(videoUrl)) {
+    return { ok: true, video_url: String(videoUrl).trim() };
+  }
+  if (videoUrl) {
+    return { ok: false, error: (fallbackError || String(videoUrl)).slice(0, 500) };
+  }
+  return { ok: false, error: (fallbackError || '超时或失败').slice(0, 500) };
+}
+
 /** 将 video_generations 标为失败；若无 error_msg 列则只更新 status/updated_at */
 function setVideoGenFailed(db, videoGenId, errorMsg, now) {
   try {
@@ -359,9 +370,10 @@ async function processVideoGeneration(db, log, videoGenId) {
       log.error('Video generation failed', { id: videoGenId, error: result.error });
       return;
     }
-    if (result.video_url) {
+    const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
+    if (directVideo.ok) {
       let localPath = null;
-      let finalVideoUrl = result.video_url;
+      let finalVideoUrl = directVideo.video_url;
       try {
         const loadConfig = require('../config').loadConfig;
         const cfg = loadConfig();
@@ -369,12 +381,12 @@ async function processVideoGeneration(db, log, videoGenId) {
           ? cfg.storage.local_path
           : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-        localPath = await downloadVideoToLocal(storagePath, result.video_url, videoGenId, log, projectSubdir);
+        localPath = await downloadVideoToLocal(storagePath, directVideo.video_url, videoGenId, log, projectSubdir);
         await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
         if (localPath) {
           finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
             || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
-            || result.video_url;
+            || directVideo.video_url;
         }
       } catch (_) {}
       try {
@@ -401,17 +413,39 @@ async function processVideoGeneration(db, log, videoGenId) {
       log.info('Video generation completed', { id: videoGenId, video_url: finalVideoUrl, local_path: localPath });
       return;
     }
+    if (result.video_url) {
+      setVideoGenFailed(db, videoGenId, directVideo.error, now2);
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, directVideo.error);
+      log.error('Video generation failed', { id: videoGenId, error: directVideo.error });
+      return;
+    }
     if (result.task_id) {
       db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run(
         'processing',
         now2,
         videoGenId
       );
-      const pollResult = await videoClient.pollVideoTask(db, log, videoGenId, result.task_id, config);
+      const POLL_INTERVAL_MS = 10000;
+      const { resolveVideoGenerationTimeoutMinutes } = require('../config/videoGeneration');
+      const generationTimeoutMinutes = resolveVideoGenerationTimeoutMinutes(cfg);
+      const pollMaxAttempts = Math.max(
+        1,
+        Math.ceil((generationTimeoutMinutes * 60 * 1000) / POLL_INTERVAL_MS)
+      );
+      const pollResult = await videoClient.pollVideoTask(
+        db,
+        log,
+        videoGenId,
+        result.task_id,
+        config,
+        pollMaxAttempts,
+        POLL_INTERVAL_MS
+      );
       const now3 = new Date().toISOString();
-      if (pollResult.video_url) {
+      const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
+      if (polledVideo.ok) {
         let localPath = null;
-        let finalVideoUrl = pollResult.video_url;
+        let finalVideoUrl = polledVideo.video_url;
         try {
           const loadConfig = require('../config').loadConfig;
           const cfg = loadConfig();
@@ -419,12 +453,12 @@ async function processVideoGeneration(db, log, videoGenId) {
             ? cfg.storage.local_path
             : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
           const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-          localPath = await downloadVideoToLocal(storagePath, pollResult.video_url, videoGenId, log, projectSubdir);
+          localPath = await downloadVideoToLocal(storagePath, polledVideo.video_url, videoGenId, log, projectSubdir);
           await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
           if (localPath) {
             finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
               || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
-              || pollResult.video_url;
+              || polledVideo.video_url;
           }
         } catch (_) {}
         try {
@@ -450,8 +484,9 @@ async function processVideoGeneration(db, log, videoGenId) {
         if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: finalVideoUrl, status: 'completed' });
         log.info('Video generation completed (after poll)', { id: videoGenId, local_path: localPath });
       } else {
-        setVideoGenFailed(db, videoGenId, pollResult.error || '超时或失败', now3);
-        if (row.task_id) taskService.updateTaskError(db, row.task_id, pollResult.error);
+        setVideoGenFailed(db, videoGenId, polledVideo.error, now3);
+        if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
+        log.error('Video generation failed (after poll)', { id: videoGenId, error: polledVideo.error });
       }
       return;
     }

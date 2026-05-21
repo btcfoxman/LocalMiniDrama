@@ -405,6 +405,7 @@ function rowToCharacter(r) {
     sort_order: r.sort_order ?? 0,
     error_msg: r.error_msg,
     polished_prompt: r.polished_prompt || null,
+    negative_prompt: r.negative_prompt || null,
     four_view_image_url: r.four_view_image_url || null,
     seedance2_asset: parseJsonColumn(r.seedance2_asset),
     created_at: r.created_at,
@@ -420,6 +421,7 @@ function rowToScene(r) {
     time: r.time,
     prompt: r.prompt,
     polished_prompt: r.polished_prompt || null,
+    negative_prompt: r.negative_prompt || null,
     storyboard_count: r.storyboard_count ?? 1,
     image_url: sanitizeImageUrl(r.image_url),
     local_path: r.local_path,
@@ -444,6 +446,7 @@ function rowToProp(r) {
     local_path: r.local_path,
     extra_images: r.extra_images || null,
     ref_image: r.ref_image || null,
+    negative_prompt: r.negative_prompt || null,
     error_msg: r.error_msg,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -574,9 +577,15 @@ function saveCharacters(db, log, dramaId, req) {
           }
         }
         const imgSql = imgFields.length > 0 ? ', ' + imgFields.join(', ') : '';
+        let setCore = 'name = ?, role = ?, description = ?, personality = ?, appearance = ?';
+        const coreParams = [char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null];
+        if ('negative_prompt' in char) {
+          setCore += ', negative_prompt = ?';
+          coreParams.push(char.negative_prompt ?? null);
+        }
         db.prepare(
-          `UPDATE characters SET name = ?, role = ?, description = ?, personality = ?, appearance = ?${imgSql}, updated_at = ? WHERE id = ?`
-        ).run(char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, ...imgParams, new Date().toISOString(), char.id);
+          `UPDATE characters SET ${setCore}${imgSql}, updated_at = ? WHERE id = ?`
+        ).run(...coreParams, ...imgParams, new Date().toISOString(), char.id);
         continue;
       }
     }
@@ -601,16 +610,22 @@ function saveCharacters(db, log, dramaId, req) {
         }
       }
       const imgSqlN = imgFieldsN.length > 0 ? ', ' + imgFieldsN.join(', ') : '';
+      let setCoreN = 'role = ?, description = ?, personality = ?, appearance = ?';
+      const coreParamsN = [char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null];
+      if ('negative_prompt' in char) {
+        setCoreN += ', negative_prompt = ?';
+        coreParamsN.push(char.negative_prompt ?? null);
+      }
       db.prepare(
-        `UPDATE characters SET role = ?, description = ?, personality = ?, appearance = ?${imgSqlN}, updated_at = ?, deleted_at = NULL WHERE id = ?`
-      ).run(char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, ...imgParamsN, new Date().toISOString(), byName.id);
+        `UPDATE characters SET ${setCoreN}${imgSqlN}, updated_at = ?, deleted_at = NULL WHERE id = ?`
+      ).run(...coreParamsN, ...imgParamsN, new Date().toISOString(), byName.id);
       continue;
     }
     const now = new Date().toISOString();
     const info = db.prepare(
-      `INSERT INTO characters (drama_id, name, role, description, personality, appearance, image_url, local_path, ref_image, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(did, char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, char.image_url ?? null, char.local_path ?? null, char.ref_image ?? null, now, now);
+      `INSERT INTO characters (drama_id, name, role, description, personality, appearance, image_url, local_path, ref_image, negative_prompt, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(did, char.name, char.role ?? null, char.description ?? null, char.personality ?? null, char.appearance ?? null, char.image_url ?? null, char.local_path ?? null, char.ref_image ?? null, char.negative_prompt ?? null, now, now);
     characterIds.push(info.lastInsertRowid);
   }
   if (req.episode_id && characterIds.length > 0) {

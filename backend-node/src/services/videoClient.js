@@ -611,6 +611,46 @@ function normalizeVolcOmniDuration(modelName, durationNum) {
   return safe <= 7 ? 5 : 10;
 }
 
+/** Seedance 2.x 且名称含 fast（如 doubao-seedance-2-0-fast）：方舟侧不支持 1080p（含 r2v）。不含 fast 的 2.0 等保持 1080p。 */
+function isVolcOmniSeedance2FastModel(modelName) {
+  const m = String(modelName || '').trim().toLowerCase();
+  if (!m.includes('seedance') || !m.includes('fast')) return false;
+  const is2x =
+    /(?:seedance[-_])?2\b|seedance2\b|[-_]2[-_]0[-_]|2\.0/.test(m);
+  return is2x;
+}
+
+/**
+ * 仅对 Seedance 2.x **fast** 将 1080p 降为 720p，避免 r2v 400；其余模型原样提交。
+ * 未知 resolution 枚举则省略，由接口默认。
+ */
+function normalizeVolcOmniResolution(modelName, resolution, log, video_gen_id) {
+  let r = (resolution != null ? String(resolution) : '').trim().toLowerCase();
+  if (!r) return { value: null };
+  if (r === '1080') r = '1080p';
+  if (r === '720') r = '720p';
+  if (r === '480') r = '480p';
+
+  if (isVolcOmniSeedance2FastModel(modelName) && r === '1080p') {
+    if (log?.info) {
+      log.info('[VolcOmni] resolution 1080p 对 Seedance 2.x fast 不可用，已改为 720p', {
+        video_gen_id,
+        model: modelName,
+      });
+    }
+    return { value: '720p' };
+  }
+
+  const allowed = ['480p', '720p', '1080p'];
+  if (!allowed.includes(r)) {
+    if (log?.warn) {
+      log.warn('[VolcOmni] resolution 非标准枚举，已省略', { video_gen_id, resolution });
+    }
+    return { value: null };
+  }
+  return { value: r };
+}
+
 /**
  * 火山引擎方舟 — Seedance 2.0 等「全能/多参考图」视频
  * 与标准 volcengine 共用：POST {base}/contents/generations/tasks，GET {base}/contents/generations/tasks/{id}
@@ -640,6 +680,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
   const finalModel = normalizeVolcModel(model);
   const ratio = aspect_ratio || '16:9';
   const effectiveDuration = normalizeVolcOmniDuration(finalModel, duration);
+  const { value: effectiveResolution } = normalizeVolcOmniResolution(finalModel, resolution, log, video_gen_id);
 
   const refList = Array.isArray(reference_urls) ? reference_urls.filter(Boolean) : [];
   const primary = (image_url || '').trim();
@@ -654,7 +695,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     duration: effectiveDuration,
     watermark: watermark != null ? Boolean(watermark) : false,
   };
-  if (resolution) body.resolution = resolution;
+  if (effectiveResolution) body.resolution = effectiveResolution;
   if (seed != null) body.seed = Number(seed);
   if (camera_fixed != null) body.camera_fixed = Boolean(camera_fixed);
 
@@ -724,7 +765,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
         log.info('[VolcOmni][SD2] content 使用素材库 asset 引用', { video_gen_id, index: i, asset_head: String(u).slice(0, 80) });
       }
     }
-    if (body.content.length > 1) body.task_type = 'i2v';
+    // if (body.content.length > 1) body.task_type = 'i2v';
   }
 
   log.info('[VolcOmni] 创建任务', {
@@ -732,6 +773,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     model: finalModel,
     ratio,
     duration: effectiveDuration,
+    resolution: effectiveResolution || '(默认)',
     image_count: urls.length,
     image_url_types: body.content
       .filter((p) => p.type === 'image_url')
@@ -1185,16 +1227,77 @@ function isPlausibleHttpVideoUrl(s) {
   return /^https?:\/\//i.test(t);
 }
 
+function coerceHttpVideoUrl(s) {
+  return isPlausibleHttpVideoUrl(s) ? String(s).trim() : null;
+}
+
+/** 轮询 JSON 中的任务状态（兼容中转 data.data.status = FAILURE） */
+function extractPollTaskStatus(data) {
+  if (!data || typeof data !== 'object') return '';
+  const candidates = [
+    data.status,
+    data.state,
+    data.task_status,
+    data.data?.status,
+    data.data?.state,
+    data.data?.task_status,
+    data.output?.task_status,
+  ];
+  for (const c of candidates) {
+    if (c != null && String(c).trim() !== '') return String(c).trim().toLowerCase();
+  }
+  return '';
+}
+
+function isPollTaskFailed(status) {
+  return (
+    status === 'failed' ||
+    status === 'failure' ||
+    status === 'error' ||
+    status === 'cancelled' ||
+    status === 'canceled' ||
+    status === 'fail'
+  );
+}
+
+/** 失败时的可读错误（fail_reason、非 http 的 result_url 等） */
+function extractPollFailureMessage(data) {
+  if (!data || typeof data !== 'object') return '';
+  const inner = data.data && typeof data.data === 'object' && !Array.isArray(data.data) ? data.data : null;
+  const deep = inner?.data && typeof inner.data === 'object' ? inner.data : null;
+  const candidates = [
+    inner?.fail_reason,
+    data.fail_reason,
+    inner?.message,
+    deep?.msg,
+    data.error?.message,
+    typeof data.error === 'string' ? data.error : null,
+    data.message,
+    typeof data.msg === 'string' ? data.msg : null,
+  ];
+  for (const c of candidates) {
+    if (c == null) continue;
+    const s = String(c).trim();
+    if (s && !/^https?:\/\//i.test(s)) return s;
+  }
+  for (const rec of [inner, data]) {
+    if (!rec || typeof rec !== 'object') continue;
+    for (const k of ['result_url', 'video_url']) {
+      const u = rec[k];
+      if (typeof u === 'string' && u.trim() && !isPlausibleHttpVideoUrl(u)) return u.trim();
+    }
+  }
+  return '';
+}
+
 /** 单层对象上的视频地址：兼容中转站使用 result_url 而非 video_url */
 function videoUrlFromRecord(rec, opts = {}) {
   if (!rec || typeof rec !== 'object') return null;
   const keys = ['video_url', 'download_url', 'play_url', 'output_url', 'url'];
   if (opts.includeResultUrl !== false) keys.push('result_url');
   for (const k of keys) {
-    const v = rec[k];
-    if (typeof v !== 'string' || !v.trim()) continue;
-    const t = v.trim();
-    if (isPlausibleHttpVideoUrl(t)) return t;
+    const u = coerceHttpVideoUrl(rec[k]);
+    if (u) return u;
   }
   return null;
 }
@@ -1204,12 +1307,13 @@ function videoUrlFromArkVideoNode(video) {
   if (!video || typeof video !== 'object') return null;
   const origin =
     video.transcoded_video && typeof video.transcoded_video === 'object' ? video.transcoded_video.origin : null;
-  if (origin && typeof origin === 'object' && typeof origin.video_url === 'string' && origin.video_url.trim()) {
-    return origin.video_url.trim();
+  if (origin && typeof origin === 'object' && typeof origin.video_url === 'string') {
+    const u = coerceHttpVideoUrl(origin.video_url);
+    if (u) return u;
   }
   for (const k of ['download_url', 'play_url', 'url', 'video_url']) {
-    const v = video[k];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    const u = coerceHttpVideoUrl(video[k]);
+    if (u) return u;
   }
   return null;
 }
@@ -1230,10 +1334,7 @@ function pickVideoUrlFromItemList(list) {
       ? ca.transcoded_video.origin.video_url.trim()
       : null;
   const fromVideo = videoUrlFromArkVideoNode(item.video);
-  const fromResult =
-    typeof item.result_url === 'string' && item.result_url.trim() && isPlausibleHttpVideoUrl(item.result_url)
-      ? item.result_url.trim()
-      : null;
+  const fromResult = coerceHttpVideoUrl(item.result_url);
   const flat = videoUrlFromRecord(item);
   return fromCommon || fromVideo || fromResult || flat || null;
 }
@@ -1269,8 +1370,11 @@ function pickProxyVideoUrl(data) {
   const topList = pickVideoUrlFromItemList(data.item_list);
   if (topList) return topList;
   if (data.video && typeof data.video === 'object') {
-    const vu = videoUrlFromArkVideoNode(data.video) || data.video.url || data.video.video_url;
-    if (vu && typeof vu === 'string') return vu.trim();
+    const vu =
+      videoUrlFromArkVideoNode(data.video) ||
+      coerceHttpVideoUrl(data.video.url) ||
+      coerceHttpVideoUrl(data.video.video_url);
+    if (vu) return vu;
   }
   let u = videoUrlFromRecord(data, { includeResultUrl: false });
   if (u) return u;
@@ -1286,8 +1390,11 @@ function pickProxyVideoUrl(data) {
     u = videoUrlFromRecord(d, { includeResultUrl: false });
     if (u) return u;
     if (d.video && typeof d.video === 'object') {
-      const dv = videoUrlFromArkVideoNode(d.video) || d.video.url || d.video.video_url;
-      if (dv && typeof dv === 'string') return dv.trim();
+      const dv =
+        videoUrlFromArkVideoNode(d.video) ||
+        coerceHttpVideoUrl(d.video.url) ||
+        coerceHttpVideoUrl(d.video.video_url);
+      if (dv) return dv;
     }
     if (d.result && typeof d.result === 'object') {
       const dr = pickVideoUrlFromResultShape(d.result);
@@ -1308,8 +1415,11 @@ function pickProxyVideoUrl(data) {
     u = videoUrlFromRecord(c);
     if (u) return u;
     if (c.video && typeof c.video === 'object') {
-      const cv = videoUrlFromArkVideoNode(c.video) || c.video.url || c.video.video_url;
-      if (cv && typeof cv === 'string') return cv.trim();
+      const cv =
+        videoUrlFromArkVideoNode(c.video) ||
+        coerceHttpVideoUrl(c.video.url) ||
+        coerceHttpVideoUrl(c.video.video_url);
+      if (cv) return cv;
     }
   }
   for (const k of ['videos', 'generations', 'works']) {
@@ -2529,21 +2639,32 @@ function formatGrokVideo3Size(resolution) {
   return '720P';
 }
 
-/** 与官方 / 中转 grok-video-3 示例一致：images[] + size，而非旧版 image.url */
-function isGrokVideoCreateStyleModel(modelName) {
-  return /grok-video/i.test(String(modelName || ''));
-}
-
 function clampXaiDuration(d) {
   const n = Math.round(Number(d));
   if (!Number.isFinite(n) || n < 1) return 8;
   return Math.min(15, Math.max(1, n));
 }
 
+/** 模型名同时含 grok 与 video（不必相邻，如 grok-video-3、grok_imagine_1.0_video_apimart）→ images[] + size */
+function isXaiGrokVideoStyleModel(modelName) {
+  const m = String(modelName || '').toLowerCase();
+  return /grok/.test(m) && /video/.test(m);
+}
+
+/** 主图 + reference_urls 去重合并为公网 URL 字符串数组 */
+function mergeXaiVideoImageUrls(imageUrlForApi, resolvedRefStrings, max = 10) {
+  const images = [];
+  if (imageUrlForApi) images.push(imageUrlForApi);
+  for (const s of resolvedRefStrings) {
+    if (s && !images.includes(s)) images.push(s);
+  }
+  return images.slice(0, max);
+}
+
 /**
- * xAI 视频：
- * - grok-video-3 等：与官方一致 body 含 images[]、size（720P），见中转文档示例。
- * - grok-imagine 旧形态：image.url、resolution、duration、reference_images。
+ * xAI 视频（官方两套）：
+ * - grok + video 模型：images: string[]、size（720P）、aspect_ratio、duration（中转 grok-video-3 等同此）。
+ * - 其余 grok-imagine：image.url、resolution、duration、reference_images（主图与额外参考图可同时存在）。
  */
 async function callXaiVideoApi(config, log, opts) {
   const {
@@ -2568,7 +2689,7 @@ async function callXaiVideoApi(config, log, opts) {
   const dur = clampXaiDuration(duration != null ? duration : 8);
   const reso = resolveXaiVideoResolution(resolution);
   const modelName = model || 'grok-imagine-video';
-  const useGrokVideoCreate = isGrokVideoCreateStyleModel(modelName);
+  const useGrokVideoImages = isXaiGrokVideoStyleModel(modelName);
 
   let imageUrlForApi = '';
   const rawMain = (image_url || '').trim();
@@ -2594,16 +2715,12 @@ async function callXaiVideoApi(config, log, opts) {
     }
   }
 
+  const mergedImages = mergeXaiVideoImageUrls(imageUrlForApi, resolvedRefStrings);
+
   let body;
-  let mainTransport = 'none';
   let logExtra = {};
 
-  if (useGrokVideoCreate) {
-    const images = [];
-    if (imageUrlForApi) images.push(imageUrlForApi);
-    for (const s of resolvedRefStrings) {
-      if (s && !images.includes(s)) images.push(s);
-    }
+  if (useGrokVideoImages) {
     body = {
       model: modelName,
       prompt: prompt || '',
@@ -2611,18 +2728,13 @@ async function callXaiVideoApi(config, log, opts) {
       size: formatGrokVideo3Size(resolution),
       duration: dur,
     };
-    if (images.length) body.images = images.slice(0, 10);
-    const first = images[0] || '';
-    mainTransport =
-      first && String(first).startsWith('data:') ? 'data_url' : first ? 'http_url' : 'none';
+    if (mergedImages.length) body.images = mergedImages;
     logExtra = {
       body_shape: 'grok-video',
       images_count: body.images?.length || 0,
       size: body.size,
-      image_transport: mainTransport,
     };
   } else {
-    const hasImage = !!imageUrlForApi;
     body = {
       model: modelName,
       prompt: prompt || '',
@@ -2630,20 +2742,26 @@ async function callXaiVideoApi(config, log, opts) {
       aspect_ratio: ratio,
       resolution: reso,
     };
-    if (hasImage && imageUrlForApi) {
+    if (imageUrlForApi) {
       body.image = { url: imageUrlForApi };
-    } else if (resolvedRefStrings.length > 0) {
-      body.reference_images = resolvedRefStrings.map((u) => ({ url: u }));
+      const extraRefs = mergedImages.filter((u) => u !== imageUrlForApi);
+      if (extraRefs.length > 0) {
+        body.reference_images = extraRefs.map((u) => ({ url: u }));
+      }
+    } else if (mergedImages.length > 0) {
+      body.reference_images = mergedImages.map((u) => ({ url: u }));
     }
-    mainTransport =
-      body.image?.url && String(body.image.url).startsWith('data:') ? 'data_url' : body.image?.url ? 'http_url' : 'none';
     logExtra = {
       body_shape: 'grok-imagine',
       has_image: !!body.image,
-      image_transport: mainTransport,
       ref_count: body.reference_images?.length || 0,
+      total_unique_images: mergedImages.length,
     };
   }
+
+  const first = mergedImages[0] || '';
+  const mainTransport =
+    first && String(first).startsWith('data:') ? 'data_url' : first ? 'http_url' : 'none';
 
   log.info('[xAI视频] 提交', {
     video_gen_id,
@@ -2652,7 +2770,13 @@ async function callXaiVideoApi(config, log, opts) {
     aspect_ratio: ratio,
     duration: body.duration != null ? body.duration : dur,
     resolution: body.resolution != null ? body.resolution : undefined,
+    image_transport: mainTransport,
     ...logExtra,
+    images: body.images,
+    image_url_head: body.image?.url ? String(body.image.url).slice(0, 100) : null,
+    reference_images_heads: Array.isArray(body.reference_images)
+      ? body.reference_images.map((r) => String(r?.url || '').slice(0, 100))
+      : undefined,
   });
 
   const res = await fetch(url, {
@@ -3431,7 +3555,8 @@ async function callVideoApi(db, log, opts) {
 }
 
 /**
- * ??????????????????/ChatFire ? ???? DashScope?
+ * 轮询异步视频任务（即梦 / ChatFire / 方舟 / DashScope 等）。
+ * 默认约 30 分钟（每 10 秒一轮）；可由调用方传入 maxAttempts、intervalMs 覆盖。
  */
 async function pollVideoTask(
   db,
@@ -3615,12 +3740,12 @@ async function pollVideoTask(
       }
 
       if (isVeo3) {
-        const status = (data.status || data.data?.status || data.task_status || '').toLowerCase();
+        const status = extractPollTaskStatus(data);
         log.info('[Veo3 poll] task status', { video_gen_id: videoGenId, attempt, status, id: data.task_id || data.id });
-        if (status === 'failed' || status === 'error') {
-          const msg = data.error?.message || data.error || data.message || data.data?.error || 'Veo3 task failed';
+        if (isPollTaskFailed(status)) {
+          const msg = extractPollFailureMessage(data) || data.data?.error || 'Veo3 task failed';
           log.warn('[Veo3 poll] task failed', { video_gen_id: videoGenId, msg });
-          return { error: String(msg) };
+          return { error: String(msg).slice(0, 500) };
         }
         const videoUrl = pickProxyVideoUrl(data);
         if (videoUrl) {
@@ -3635,16 +3760,16 @@ async function pollVideoTask(
       }
 
       if (isSora) {
-        const status = (data.status || '').toLowerCase();
+        const status = extractPollTaskStatus(data);
         log.info('[Sora poll] ????', { video_gen_id: videoGenId, attempt, status, progress: data.progress, id: data.id });
-        if (status === 'failed' || status === 'error') {
-          const msg = data.error?.message || data.error || data.message || 'Sora ??????';
-          log.warn('[Sora poll] ????', { video_gen_id: videoGenId, msg, data: JSON.stringify(data).slice(0, 300) });
-          return { error: String(msg) };
+        if (isPollTaskFailed(status)) {
+          const msg = extractPollFailureMessage(data) || 'Sora 任务失败';
+          log.warn('[Sora poll] 任务失败', { video_gen_id: videoGenId, msg, data: JSON.stringify(data).slice(0, 300) });
+          return { error: String(msg).slice(0, 500) };
         }
         // succeeded / completed / done ? ??? URL
         const videoUrl = pickProxyVideoUrl(data);
-        if (videoUrl) {
+        if (videoUrl && isPlausibleHttpVideoUrl(videoUrl)) {
           log.info('[Sora poll] ????', { video_gen_id: videoGenId, video_url: videoUrl });
           return { video_url: videoUrl };
         }
@@ -3710,24 +3835,10 @@ async function pollVideoTask(
         }
         continue;
       }
-      const inner = data.data && typeof data.data === 'object' && !Array.isArray(data.data) ? data.data : null;
-      const innerTask =
-        inner && inner.data && typeof inner.data === 'object' && !Array.isArray(inner.data) ? inner.data : null;
-      const statusRaw = data.status || inner?.status || innerTask?.status || '';
-      const statusNorm = String(statusRaw || '').toLowerCase();
+      const status = extractPollTaskStatus(data);
       const videoUrl = pickProxyVideoUrl(data);
-      const errMsg =
-        (data.error && (typeof data.error === 'string' ? data.error : data.error.message)) ||
-        (inner && inner.fail_reason && String(inner.fail_reason).trim()) ||
-        (innerTask?.error &&
-          (typeof innerTask.error === 'string' ? innerTask.error : innerTask.error.message)) ||
-        null;
-      const isTerminalFailure =
-        statusNorm === 'failed' ||
-        statusNorm === 'failure' ||
-        statusNorm === 'error' ||
-        statusNorm === 'cancelled' ||
-        statusNorm === 'canceled';
+      const failMsg = extractPollFailureMessage(data);
+      const errMsg = data.error && (typeof data.error === 'string' ? data.error : data.error.message);
       if (isVolcPoll) {
         const summaryJson = JSON.stringify(data);
         const sum =
@@ -3739,21 +3850,27 @@ async function pollVideoTask(
         log.info('[poll] 方舟/火山 解析摘要', {
           video_gen_id: videoGenId,
           round: pollRound,
-          top_level_status: statusRaw,
+          top_level_status: status,
           has_video_url: !!videoUrl,
-          error_hint: errMsg || data?.error?.code || data?.message || innerTask?.error?.code || null,
+          error_hint: failMsg || errMsg || data?.error?.code || data?.message || null,
           parsed_json: sum,
         });
       }
-      if (isTerminalFailure) {
-        return { error: errMsg || String(statusRaw || '') || '任务失败' };
+      if (isPollTaskFailed(status) || errMsg) {
+        const msg = failMsg || errMsg || status || '任务失败';
+        log.warn('[poll] 任务失败', { video_gen_id: videoGenId, round: pollRound, status, msg });
+        return { error: String(msg).slice(0, 500) };
       }
-      if (videoUrl) return { video_url: videoUrl };
+      if (videoUrl && isPlausibleHttpVideoUrl(videoUrl)) return { video_url: videoUrl };
+      if (failMsg) {
+        log.warn('[poll] 上游返回失败文案', { video_gen_id: videoGenId, round: pollRound, msg: failMsg.slice(0, 200) });
+        return { error: failMsg.slice(0, 500) };
+      }
     } catch (e) {
       log.warn('Video poll request failed', { attempt, error: e.message });
     }
   }
-  return { error: '??????' };
+  return { error: '视频生成轮询超时' };
 }
 
 module.exports = {
@@ -3761,4 +3878,5 @@ module.exports = {
   callVideoApi,
   pollVideoTask,
   normalizeAspectRatioForApi,
+  isPlausibleHttpVideoUrl,
 };
