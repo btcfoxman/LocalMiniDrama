@@ -38,6 +38,23 @@ function normalizeUrl(value, name) {
   }
 }
 
+function defaultForcePathStyle(endpoint) {
+  const host = new URL(endpoint).hostname.toLowerCase();
+  if (host.endsWith('.aliyuncs.com')) return false;
+  return false;
+}
+
+function buildDefaultPublicBase(endpoint, bucket, forcePathStyle) {
+  const bucketName = trimSlashes(bucket);
+  if (forcePathStyle) return `${endpoint}/${bucketName}`;
+
+  const url = new URL(endpoint);
+  if (!url.hostname.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
+    url.host = `${bucketName}.${url.host}`;
+  }
+  return trimTrailingSlash(url.toString());
+}
+
 function boolValue(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -135,10 +152,11 @@ function hashesFor(filePath) {
 
 function createS3Client() {
   const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
+  const forcePathStyle = boolValue(env('OSS_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
   return new S3Client({
     endpoint,
     region: env('OSS_REGION', 'us-east-1'),
-    forcePathStyle: boolValue(env('OSS_FORCE_PATH_STYLE'), true),
+    forcePathStyle,
     credentials: {
       accessKeyId: requiredEnv('OSS_ACCESS_KEY_ID'),
       secretAccessKey: requiredEnv('OSS_ACCESS_KEY_SECRET'),
@@ -149,10 +167,12 @@ function createS3Client() {
 async function uploadArtifacts(files, options) {
   const client = createS3Client();
   const bucket = requiredEnv('OSS_BUCKET');
+  const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
+  const forcePathStyle = boolValue(env('OSS_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
   const publicBase = normalizeUrl(
     env('OSS_PUBLIC_BASE_URL')
       || env('OSS_BASE_URL')
-      || `${normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT')}/${bucket}`,
+      || buildDefaultPublicBase(endpoint, bucket, forcePathStyle),
     'OSS_PUBLIC_BASE_URL'
   );
 
