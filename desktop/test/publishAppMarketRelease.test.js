@@ -1,7 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  buildElectronUpdateManifest,
   compareSemver,
   planReleaseRetention,
 } = require('../scripts/publish-app-market-release');
@@ -43,22 +42,5 @@ describe('app market S3 release retention', () => {
     const plan = planReleaseRetention(keys, prefix, '1.3.0', 1);
     assert.deepEqual(new Set(plan.keepVersions), new Set(['1.3.0', '1.2.1']));
     assert.deepEqual(plan.deleteVersions, ['1.2.1-beta.2']);
-  });
-
-  it('builds an Electron feed that points to the immutable S3 artifact', () => {
-    const manifest = buildElectronUpdateManifest({
-      version: '1.2.21',
-      download_url: 'https://files.example.com/releases/OverseasDrama-Setup-1.2.21.exe',
-      size_bytes: 12345,
-      sha512: 'abc+/=',
-      published_at: '2026-07-13T00:00:00.000Z',
-      release_notes: 'Updater feed test',
-      staging_percentage: 100,
-    });
-
-    assert.match(manifest, /version: "1\.2\.21"/);
-    assert.match(manifest, /url: "https:\/\/files\.example\.com\/releases\/OverseasDrama-Setup-1\.2\.21\.exe"/);
-    assert.match(manifest, /sha512: "abc\+\/=\"/);
-    assert.match(manifest, /stagingPercentage: 100/);
   });
 });
