@@ -4,6 +4,27 @@
  * 将分镜勾选的角色（dramas.characters 表 id）同步到 storyboard_characters（角色库 id），
  * 便于帧提示词与图生参考图与 UI 一致；按角色名匹配本剧或全局角色库。
  */
+function parseDramaCharacterIds(charactersValue) {
+  if (charactersValue === undefined || charactersValue === null) return null;
+  if (Array.isArray(charactersValue)) {
+    return charactersValue
+      .map((x) => Number(typeof x === 'object' && x != null ? x.id : x))
+      .filter((n) => Number.isFinite(n));
+  }
+  if (typeof charactersValue === 'string') {
+    try {
+      const arr = JSON.parse(charactersValue);
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((x) => Number(typeof x === 'object' && x != null ? x.id : x))
+        .filter((n) => Number.isFinite(n));
+    } catch (_) {
+      return [];
+    }
+  }
+  return [];
+}
+
 function syncStoryboardCharacterLinks(db, storyboardId, dramaCharacterIds) {
   const sid = Number(storyboardId);
   db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?').run(sid);
@@ -66,7 +87,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -76,18 +97,7 @@ function updateStoryboard(db, log, id, req) {
     updates.push('characters = ?');
     const jsonStr = Array.isArray(charactersValue) ? JSON.stringify(charactersValue) : (typeof charactersValue === 'string' ? charactersValue : '[]');
     params.push(jsonStr);
-    if (Array.isArray(charactersValue)) {
-      parsedDramaCharIdsForSync = charactersValue.map((x) => Number(typeof x === 'object' && x != null ? x.id : x)).filter((n) => Number.isFinite(n));
-    } else if (typeof charactersValue === 'string') {
-      try {
-        const arr = JSON.parse(charactersValue);
-        if (Array.isArray(arr)) {
-          parsedDramaCharIdsForSync = arr.map((x) => Number(typeof x === 'object' && x != null ? x.id : x)).filter((n) => Number.isFinite(n));
-        }
-      } catch (_) {
-        parsedDramaCharIdsForSync = [];
-      }
-    }
+    parsedDramaCharIdsForSync = parseDramaCharacterIds(charactersValue) ?? [];
   }
   for (const key of allowed) {
     if (key === 'characters') continue;
@@ -102,6 +112,8 @@ function updateStoryboard(db, log, id, req) {
     params.push(new Date().toISOString(), id);
     db.prepare('UPDATE storyboards SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
   }
+  // 角色勾选变更：只同步 storyboard_characters，不删除 frame_prompts。
+  // 用户手动保存的首/尾帧提示词应保留；图生时 framePromptSanitize 会按当前勾选剔除未出场角色名。
   if (parsedDramaCharIdsForSync !== null) {
     try {
       syncStoryboardCharacterLinks(db, id, parsedDramaCharIdsForSync);
@@ -170,6 +182,11 @@ function getStoryboardById(db, id) {
     segment_title: r.segment_title ?? null,
     creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
     universal_segment_text: r.universal_segment_text ?? null,
+    layout_description: r.layout_description ?? null,
+    first_frame_image_id: r.first_frame_image_id ?? null,
+    last_frame_image_id: r.last_frame_image_id ?? null,
+    last_frame_image_url: r.last_frame_image_url ?? null,
+    last_frame_local_path: r.last_frame_local_path ?? null,
     characters,
     prop_ids: propIds,
     composed_image: r.composed_image,

@@ -1,11 +1,12 @@
-import { ref, reactive } from 'vue'
+import { ref, reactive, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { characterAPI } from '@/api/characters'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
 import { uploadAPI } from '@/api/upload'
-import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership, markAssetInLibrary } from './libraryMembership'
+import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
+import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 
 /**
  * 角色管理 Composable
@@ -18,10 +19,25 @@ import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership,
  * @param {Function} deps.pollTask - 轮询异步任务
  * @param {Function} deps.pollUntilResourceHasImage - 等待资源有图片
  * @param {Function} deps.hasAssetImage - 判断资源是否有图片
- * @param {Function} [deps.getAssetImageModel] - 本集配置的资产生图模型 id（非空时与资产负面词一并传给后端）
  */
 export function useCharacters(deps) {
-  const { store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const { store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const genStore = useGenerationTaskStore()
+
+  function buildCharImageMeta(char) {
+    const dramaTitle = store.drama?.title || ''
+    const epNum = store.currentEpisode?.episode_number
+    const epLabel = dramaTitle ? `${dramaTitle} · 第${epNum ?? ''}集` : `第${epNum ?? ''}集`
+    return {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle,
+      episodeNumber: epNum,
+      resourceType: GEN_RESOURCE.CHAR_IMAGE,
+      resourceId: char.id,
+      label: `${epLabel} 角色图: ${char.name || char.id}`,
+    }
+  }
 
   function dataUrlToFile(dataUrl, filename) {
     const arr = dataUrl.split(',')
@@ -81,8 +97,15 @@ export function useCharacters(deps) {
   let editCharacterPollTimer = null
 
   // ── 角色生成状态 ──────────────────────────────────────
-  const charactersGenerating = ref(false)
+  /** 仅当前集「提取角色」进行中时为 true（按集隔离，切集不误显示 loading） */
+  const charactersGenerating = computed(() =>
+    isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.EXTRACT_CHARACTERS)
+  )
   const generatingCharIds = reactive(new Set())
+  const sd2CertifyingId = ref(null)
+  const showCharSd2Cert = ref(false)
+  const charSd2CertPayload = ref(null)
+  const sd2VoiceUploadingId = ref(null)
 
   // ── 角色库状态 ────────────────────────────────────────
   const showCharLibrary = ref(false)
@@ -98,11 +121,18 @@ export function useCharacters(deps) {
   const addingCharToLibraryId = ref(null)
   const addingCharToMaterialId = ref(null)
   const addingCharFromLibraryId = ref(null)
-  const sd2CertifyingId = ref(null)
-  const showCharSd2Cert = ref(false)
-  const charSd2CertPayload = ref(null)
-  const charMembership = createLibraryMembershipState()
   let charLibraryKeywordTimer = null
+
+  /** 角色库弹窗 Tab：library | drama | team */
+  const charLibraryTab = ref('library')
+  const dramaAllCharList = ref([])
+  const dramaAllCharLoading = ref(false)
+  const dramaAllCharPage = ref(1)
+  const dramaAllCharPageSize = ref(20)
+  const dramaAllCharTotal = ref(0)
+  const dramaAllCharKeyword = ref('')
+  let dramaAllCharKeywordTimer = null
+
 
   // ── 常量 ──────────────────────────────────────────────
   const CHAR_ROLE_LABEL = { main: '主角', supporting: '配角', minor: '次要角色' }
@@ -110,18 +140,24 @@ export function useCharacters(deps) {
 
   // ── 核心函数 ──────────────────────────────────────────
   async function onGenerateCharacters() {
-    if (!store.dramaId || !requireCurrentEpisode()) return
-    charactersGenerating.value = true
+    if (!store.dramaId) return
+    const epId = currentEpisodeId.value
+    if (!epId) {
+      ElMessage.warning('请先选择集次')
+      return
+    }
+    const meta = buildExtractTaskMeta(store, dramaId.value, epId, GEN_RESOURCE.EXTRACT_CHARACTERS, '提取角色')
+    genStore.markRunning(meta)
     try {
       const outline =
         (store.scriptContent || '').toString().trim() || undefined
       const res = await generationAPI.generateCharacters(store.dramaId, {
-        episode_id: store.currentEpisode?.id ?? undefined,
+        episode_id: epId,
         outline: outline || undefined
       })
       const taskId = res?.task_id
       if (taskId) {
-        await pollTask(taskId, () => loadDrama())
+        await pollTask(taskId, () => loadDrama(), meta)
         ElMessage.success('角色生成完成')
       } else {
         await loadDrama()
@@ -129,7 +165,7 @@ export function useCharacters(deps) {
     } catch (e) {
       ElMessage.error(e.message || '生成失败')
     } finally {
-      charactersGenerating.value = false
+      genStore.markDone(meta)
     }
   }
 
@@ -142,7 +178,7 @@ export function useCharacters(deps) {
       personality: '',
       description: '',
       polished_prompt: '',
-      negative_prompt: '',
+      negative_prompt: ''
     }
     showEditCharacter.value = true
   }
@@ -226,7 +262,7 @@ export function useCharacters(deps) {
           description: form.description || undefined,
           polished_prompt: form.polished_prompt || undefined,
           stages: form.stages ? form.stages.trim() || undefined : undefined,
-          negative_prompt: (form.negative_prompt || '').trim() || null,
+          negative_prompt: (form.negative_prompt || '').trim() || null
         })
         await saveCharRefImageIfAny(form.id)
         ElMessage.success('角色已保存')
@@ -334,12 +370,14 @@ export function useCharacters(deps) {
   async function onGenerateCharacterImage(char) {
     char.errorMsg = ''
     char.error_msg = ''
+    const meta = buildCharImageMeta(char)
     generatingCharIds.add(char.id)
+    genStore.markRunning(meta)
     try {
-      const res = await characterAPI.generateImage(char.id, getAssetImageModel?.(), getSelectedStyle())
+      const res = await characterAPI.generateImage(char.id, undefined, getSelectedStyle())
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama())
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
         if (pollRes?.status === 'failed') {
           char.errorMsg = pollRes.error || '生成失败'
         } else {
@@ -360,6 +398,7 @@ export function useCharacters(deps) {
       ElMessage.error(e.message || '提交失败')
     } finally {
       generatingCharIds.delete(char.id)
+      genStore.markDone(meta)
     }
   }
 
@@ -391,6 +430,67 @@ export function useCharacters(deps) {
       charLibraryPage.value = 1
       loadCharLibraryList()
     }, 300)
+  }
+
+  async function loadDramaAllCharList() {
+    if (!dramaId.value) {
+      dramaAllCharList.value = []
+      dramaAllCharTotal.value = 0
+      return
+    }
+    dramaAllCharLoading.value = true
+    try {
+      const res = await dramaAPI.getCharacters(dramaId.value)
+      let list = Array.isArray(res) ? res : (res?.characters ?? res?.items ?? [])
+      const kw = (dramaAllCharKeyword.value || '').trim().toLowerCase()
+      if (kw) {
+        list = list.filter((c) => {
+          const name = (c.name || '').toLowerCase()
+          const desc = (c.description || '').toLowerCase()
+          const app = (c.appearance || '').toLowerCase()
+          return name.includes(kw) || desc.includes(kw) || app.includes(kw)
+        })
+      }
+      dramaAllCharTotal.value = list.length
+      const start = (dramaAllCharPage.value - 1) * dramaAllCharPageSize.value
+      dramaAllCharList.value = list.slice(start, start + dramaAllCharPageSize.value)
+    } catch {
+      dramaAllCharList.value = []
+      dramaAllCharTotal.value = 0
+    } finally {
+      dramaAllCharLoading.value = false
+    }
+  }
+
+  function debouncedLoadDramaAllCharList() {
+    if (dramaAllCharKeywordTimer) clearTimeout(dramaAllCharKeywordTimer)
+    dramaAllCharKeywordTimer = setTimeout(() => {
+      dramaAllCharPage.value = 1
+      loadDramaAllCharList()
+    }, 300)
+  }
+
+  function onCharLibraryDialogOpen() {
+    if (charLibraryTab.value === 'library') loadCharLibraryList()
+    else if (charLibraryTab.value === 'drama') loadDramaAllCharList()
+  }
+
+  function onCharLibraryTabChange() {
+    if (charLibraryTab.value === 'library') {
+      charLibraryPage.value = 1
+      loadCharLibraryList()
+    } else if (charLibraryTab.value === 'drama') {
+      dramaAllCharPage.value = 1
+      loadDramaAllCharList()
+    }
+  }
+
+  function charAddToEpisodeLoadingKey(scope, id) {
+    return `${scope}-${id}`
+  }
+
+  function isCharAddToEpisodeLoading(scope, id) {
+    return addingCharFromLibraryId.value === charAddToEpisodeLoadingKey(scope, id)
   }
 
   function openEditCharLibrary(item) {
@@ -445,7 +545,6 @@ export function useCharacters(deps) {
     addingCharToLibraryId.value = char.id
     try {
       await characterAPI.addToLibrary(char.id, {})
-      markAssetInLibrary(charMembership.dramaSourceIds, char)
       ElMessage.success('已加入本剧角色库')
       if (showCharLibrary.value) loadCharLibraryList()
     } catch (e) {
@@ -460,7 +559,6 @@ export function useCharacters(deps) {
     addingCharToMaterialId.value = char.id
     try {
       await characterAPI.addToMaterialLibrary(char.id)
-      markAssetInLibrary(charMembership.materialSourceIds, char)
       ElMessage.success('已加入全局素材库')
     } catch (e) {
       ElMessage.error(e.message || '加入失败')
@@ -469,97 +567,31 @@ export function useCharacters(deps) {
     }
   }
 
-  function charSd2TagType(char) {
-    const s = char?.seedance2_asset?.status
-    if (s === 'active') return 'success'
-    if (s === 'failed') return 'danger'
-    if (s === 'processing') return 'info'
-    return 'warning'
-  }
-
-  function charSd2TagText(char) {
-    const s = char?.seedance2_asset?.status
-    if (s === 'active') return '已 SD2 认证'
-    if (s === 'failed') return 'SD2 认证失败'
-    if (s === 'processing') return 'SD2 处理中'
-    return '未 SD2 认证'
-  }
-
-  async function onSd2CertifyCharacter(char) {
-    if (!hasAssetImage(char)) { ElMessage.warning('请先为该角色生成或上传图片'); return }
-    sd2CertifyingId.value = char.id
-    try {
-      const res = await characterAPI.sd2Certify(char.id)
-      const asset = res?.seedance2_asset
-      if (asset?.status === 'active') {
-        ElMessage.success('SD2 素材认证已完成')
-      } else if (asset?.poll_timed_out) {
-        ElMessage.success('已提交认证，即梦素材库仍在处理中，可稍后「刷新认证状态」')
-      } else {
-        ElMessage.success(res?.message || '认证状态已更新')
-      }
-      await loadDrama()
-    } catch (e) {
-      ElMessage.error(e.message || '认证失败')
-    } finally {
-      sd2CertifyingId.value = null
+  async function addCharToEpisode(item, scope) {
+    if (!store.dramaId) return
+    if (!currentEpisodeId.value) {
+      ElMessage.warning('请先选择本集')
+      return
     }
-  }
-
-  async function onSd2CertifyRefresh(char) {
-    sd2CertifyingId.value = char.id
-    try {
-      await characterAPI.sd2CertifyRefresh(char.id)
-      ElMessage.success('认证状态已刷新')
-      await loadDrama()
-    } catch (e) {
-      ElMessage.error(e.message || '刷新失败')
-    } finally {
-      sd2CertifyingId.value = null
-    }
-  }
-
-  function openCharSd2CertDialog(char) {
-    charSd2CertPayload.value = char.seedance2_asset ? { ...char.seedance2_asset } : null
-    showCharSd2Cert.value = true
-  }
-
-  async function loadCharLibraryMembership() {
-    await loadLibraryMembership({
-      api: characterLibraryAPI,
-      sourceType: 'character',
-      assets: store.characters || [],
-      dramaId: dramaId.value,
-      dramaSourceIds: charMembership.dramaSourceIds,
-      materialSourceIds: charMembership.materialSourceIds,
-    })
-  }
-
-  function isCharInLibrary(char) {
-    return hasAssetInLibrary(charMembership.dramaSourceIds, char)
-  }
-
-  function isCharInMaterialLibrary(char) {
-    return hasAssetInLibrary(charMembership.materialSourceIds, char)
-  }
-
-  async function onAddCharFromLibrary(item) {
-    if (!store.dramaId || !requireCurrentEpisode()) return
-    addingCharFromLibraryId.value = item.id
+    const loadingKey = charAddToEpisodeLoadingKey(scope, item.id)
+    addingCharFromLibraryId.value = loadingKey
     try {
       const existing = (store.characters || []).map(toCharacterSavePayload)
       const newCharacters = [...existing]
-      const existingChar = newCharacters.find(c => c.name === (item.name || '未命名'))
+      const existingChar = newCharacters.find((c) => c.name === (item.name || '未命名'))
       if (existingChar) {
         existingChar.description = item.description || existingChar.description
         existingChar.appearance = item.appearance || existingChar.appearance
         existingChar.image_url = item.image_url || existingChar.image_url
         existingChar.local_path = item.local_path || existingChar.local_path
+        if (item.role && !existingChar.role) existingChar.role = item.role
       } else {
         newCharacters.push({
           name: item.name || '未命名',
+          role: item.role || undefined,
           description: item.description || undefined,
           appearance: item.appearance || undefined,
+          personality: item.personality || undefined,
           image_url: item.image_url || undefined,
           local_path: item.local_path || undefined,
         })
@@ -575,6 +607,14 @@ export function useCharacters(deps) {
     } finally {
       addingCharFromLibraryId.value = null
     }
+  }
+
+  function onAddCharFromLibrary(item) {
+    return addCharToEpisode(item, 'library')
+  }
+
+  function onAddDramaCharToEpisode(item) {
+    return addCharToEpisode(item, 'drama')
   }
 
   async function extractIdentityAnchors() {
@@ -614,6 +654,162 @@ export function useCharacters(deps) {
     }
   }
 
+  async function onSd2CertifyCharacter(char) {
+    if (!char?.id) return
+    if (!hasAssetImage(char)) {
+      ElMessage.warning('请先为该角色生成或上传图片')
+      return
+    }
+    sd2CertifyingId.value = char.id
+    try {
+      await characterAPI.sd2Certify(char.id)
+      await loadDrama()
+      ElMessage.success('SD2 认证请求已提交')
+    } catch (e) {
+      const msg = e?.message || ''
+      if (/已存在|已认证|already/i.test(msg)) {
+        try {
+          await characterAPI.sd2CertifyRefresh(char.id)
+          await loadDrama()
+          ElMessage.success('SD2 认证状态已刷新')
+          return
+        } catch (_) {
+          // fall through
+        }
+      }
+      ElMessage.error(msg || 'SD2 认证失败')
+    } finally {
+      sd2CertifyingId.value = null
+    }
+  }
+
+  async function onSd2CertifyRefresh(char) {
+    if (!char?.id) return
+    sd2CertifyingId.value = char.id
+    try {
+      await characterAPI.sd2CertifyRefresh(char.id)
+      await loadDrama()
+      ElMessage.success('SD2 认证状态已刷新')
+    } catch (e) {
+      ElMessage.error(e?.message || '刷新失败')
+    } finally {
+      sd2CertifyingId.value = null
+    }
+  }
+
+  function sd2ActionLabel(char) {
+    const status = String(char?.seedance2_asset?.status || '').toLowerCase()
+    if (status === 'active') return '查看认证'
+    if (status === 'processing') return '刷新认证'
+    if (status === 'failed') return '重新认证'
+    return 'sd2认证'
+  }
+
+  async function onSd2PrimaryAction(char) {
+    const status = String(char?.seedance2_asset?.status || '').toLowerCase()
+    if (status === 'active') {
+      openCharSd2CertDialog(char)
+      return
+    }
+    if (status === 'processing') {
+      await onSd2CertifyRefresh(char)
+      return
+    }
+    await onSd2CertifyCharacter(char)
+  }
+
+  function openCharSd2CertDialog(char) {
+    charSd2CertPayload.value = char?.seedance2_asset ? { ...char.seedance2_asset } : null
+    showCharSd2Cert.value = true
+  }
+
+  function sd2VoiceActionLabel(char) {
+    const status = String(char?.seedance2_voice_asset?.status || '').toLowerCase()
+    if (status === 'active') return '音色参考'
+    if (status === 'processing') return '刷新音色'
+    if (status === 'failed') return '重新上传'
+    return '上传音色'
+  }
+
+  async function onSd2VoicePrimaryAction(char) {
+    const status = String(char?.seedance2_voice_asset?.status || '').toLowerCase()
+    if (status === 'active') {
+      ElMessage.info('音色参考已设置，将在 Seedance 2.0 模型中使用')
+      return
+    }
+    if (status === 'processing' || status === 'stale') {
+      await onSd2VoiceRefresh(char)
+      return
+    }
+    // 触发文件选择上传
+    await triggerSd2VoiceUpload(char)
+  }
+
+  // 专门用于“更换”：无论当前是否 active，都直接触发文件选择上传（覆盖）
+  async function onSd2VoiceReplace(char) {
+    await triggerSd2VoiceUpload(char)
+  }
+
+  async function onSd2VoiceRefresh(char) {
+    if (!char?.id) return
+    sd2VoiceUploadingId.value = char.id
+    try {
+      const res = await characterAPI.sd2VoiceRefresh(char.id)
+      await loadDrama()
+      ElMessage.success(res?.data?.message || '音色状态已刷新')
+    } catch (e) {
+      ElMessage.error(e?.message || '刷新失败')
+    } finally {
+      sd2VoiceUploadingId.value = null
+    }
+  }
+
+  async function triggerSd2VoiceUpload(char) {
+    if (!char?.id) return
+    // 创建隐藏的 file input
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'audio/*'
+    input.onchange = async () => {
+      const file = input.files && input.files[0]
+      if (!file) return
+      sd2VoiceUploadingId.value = char.id
+      try {
+        const res = await characterAPI.sd2VoiceUpload(char.id, file)
+        ElMessage.success('Seedance 2.0 音色参考已上传')
+        // 强制重新加载整个剧本数据，确保 seedance2_voice_asset 被正确解析并更新到 store
+        await loadDrama()
+      } catch (e) {
+        ElMessage.error(e?.message || '音色上传失败')
+      } finally {
+        sd2VoiceUploadingId.value = null
+      }
+    }
+    input.click()
+  }
+
+  // 播放 Seedance 2.0 音色参考（仅 active 状态）
+  function playSd2Voice(char) {
+    const url = char?.seedance2_voice_asset?.url
+    if (!url) {
+      ElMessage.warning('该角色暂无音色参考音频')
+      return
+    }
+    try {
+      // 统一使用相对 /static/...（与图片 assetImageUrl 一致），由当前页面 origin + Vite/后端代理或静态服务处理
+      const audio = new Audio(url)
+      audio.onerror = () => {
+        // 常见原因：文件不在 static 根目录下（后端写盘路径与 express.static(storageRoot) 不一致）、404、格式不支持
+        ElMessage.error('音频播放失败：文件可能不存在或路径不匹配，请尝试重新上传该音色参考')
+      }
+      audio.play().catch((err) => {
+        ElMessage.error('音频播放失败，请检查文件或稍后重试')
+      })
+    } catch (e) {
+      ElMessage.error('无法播放音频')
+    }
+  }
+
   return {
     // 弹窗状态
     showEditCharacter,
@@ -627,6 +823,10 @@ export function useCharacters(deps) {
     // 生成状态
     charactersGenerating,
     generatingCharIds,
+    sd2CertifyingId,
+    showCharSd2Cert,
+    charSd2CertPayload,
+    sd2VoiceUploadingId,
     // 库状态
     showCharLibrary,
     charLibraryList,
@@ -635,17 +835,27 @@ export function useCharacters(deps) {
     charLibraryPageSize,
     charLibraryTotal,
     charLibraryKeyword,
+    charLibraryTab,
+    dramaAllCharList,
+    dramaAllCharLoading,
+    dramaAllCharPage,
+    dramaAllCharPageSize,
+    dramaAllCharTotal,
+    dramaAllCharKeyword,
+
+
+
+
+
+
+
     showEditCharLibrary,
     editCharLibraryForm,
     editCharLibrarySaving,
     addingCharToLibraryId,
     addingCharToMaterialId,
+
     addingCharFromLibraryId,
-    sd2CertifyingId,
-    showCharSd2Cert,
-    charSd2CertPayload,
-    charSd2TagType,
-    charSd2TagText,
     // 函数
     charRoleLabel,
     onGenerateCharacters,
@@ -661,19 +871,33 @@ export function useCharacters(deps) {
     onCloseCharDialog,
     onDeleteCharacter,
     onGenerateCharacterImage,
-    loadCharLibraryMembership,
-    isCharInLibrary,
-    isCharInMaterialLibrary,
+    onSd2CertifyCharacter,
+    onSd2CertifyRefresh,
+    sd2ActionLabel,
+    onSd2PrimaryAction,
+    openCharSd2CertDialog,
+    onSd2VoicePrimaryAction,
+    onSd2VoiceReplace,
+    sd2VoiceActionLabel,
+    playSd2Voice,
     loadCharLibraryList,
     debouncedLoadCharLibrary,
+    loadDramaAllCharList,
+    debouncedLoadDramaAllCharList,
+
+
+    onCharLibraryDialogOpen,
+    onCharLibraryTabChange,
+    isCharAddToEpisodeLoading,
     openEditCharLibrary,
     submitEditCharLibrary,
     onDeleteCharLibrary,
     onAddCharacterToLibrary,
     onAddCharacterToMaterialLibrary,
-    onSd2CertifyCharacter,
-    onSd2CertifyRefresh,
-    openCharSd2CertDialog,
+
+
     onAddCharFromLibrary,
+    onAddDramaCharToEpisode,
+
   }
 }

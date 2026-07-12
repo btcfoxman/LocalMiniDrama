@@ -11,7 +11,7 @@ function loadAiJimeng2AuthRow(db) {
   try {
     return db
       .prepare(
-        `SELECT base_url, api_key FROM ai_service_configs
+        `SELECT id, name, base_url, api_key FROM ai_service_configs
          WHERE deleted_at IS NULL AND service_type = ? AND is_active = 1
          ORDER BY is_default DESC, priority DESC, id ASC LIMIT 1`
       )
@@ -34,8 +34,18 @@ function normalizeMaterialHubToken(raw) {
     s = s.slice(1, -1).trim();
   }
   // 去除不可见空白，避免网关把 header 判定为无效
-  s = s.replace(/[\r\n\t]/g, '').trim();
+  s = s.replace(/[\r\n\t\u200b-\u200d\ufeff]/g, '').trim();
+  // 全角空格等
+  s = s.replace(/\u00a0/g, ' ').trim();
   return s;
+}
+
+/** 日志/报错用：首尾片段，便于与 curl 测试密钥对照（不含完整密钥） */
+function tokenFingerprint(tok) {
+  const s = String(tok || '').trim();
+  if (!s) return '';
+  if (s.length <= 12) return '(过短)';
+  return `${s.slice(0, 7)}…${s.slice(-4)}`;
 }
 
 /**
@@ -112,10 +122,13 @@ function buildHubContext(cfg, db, log) {
       HUB_TOKEN: envHub,
     },
     db_jimeng2_active_row_found: !!row,
+    db_config_id: row?.id ?? null,
+    db_config_name: row?.name ?? null,
     db_api_key_field_chars: dbKeyLen,
+    token_fingerprint: tokenFingerprint(tok),
     request_header_shape: 'Authorization: Bearer <token>',
     note:
-      '若 raw_had_leading_bearer_prefix 为 true，旧版会发出 Bearer Bearer…；现已规范化。环境变量 JIMENG2_CHARACTER_AUTH_TOKEN 优先于数据库 api_key。',
+      '若 raw_had_leading_bearer_prefix 为 true，旧版会发出 Bearer Bearer…；现已规范化。环境变量 JIMENG2_CHARACTER_AUTH_TOKEN 优先于数据库 api_key。请求头仅发送 Authorization（勿重复 authorization，部分 model_ark 网关会判为无效 Token）。',
   };
 
   if (log && typeof log.info === 'function') {
@@ -126,7 +139,68 @@ function buildHubContext(cfg, db, log) {
     });
   }
 
-  return { baseUrl, token: tok, poll_max_ms, poll_interval_ms, hubAuthDiag };
+  return { baseUrl, token: tok, poll_max_ms, poll_interval_ms, hubAuthDiag, tokenFingerprint: tokenFingerprint(tok) };
+}
+
+/** model_ark 等网关在拉取图片失败时仍返回 HTTP 200 + { error: "..." }，无 id */
+function hubBusinessErrorMessage(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const err = json.error ?? json.Error;
+  if (typeof err === 'string' && err.trim()) return err.trim();
+  if (json.success === false) {
+    return String(json.message || json.msg || json.detail || '网关业务失败').slice(0, 2000);
+  }
+  return null;
+}
+
+function pickAssetId(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  const id = obj.id ?? obj.asset_id ?? obj.assetId;
+  return id != null ? String(id).trim() : '';
+}
+
+function looksLikeAssetView(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  const id = pickAssetId(obj);
+  if (!id) return false;
+  return (
+    obj.status != null ||
+    obj.asset_url != null ||
+    obj.asset_type != null ||
+    obj.url != null ||
+    obj.name != null
+  );
+}
+
+/** 兼容顶层 AssetView、{ data: {...} }、{ items: [one] } 等包裹格式 */
+function unwrapMaterialHubAssetView(payload, depth = 0) {
+  if (depth > 5 || payload == null || typeof payload !== 'object') return null;
+  if (looksLikeAssetView(payload)) {
+    const id = pickAssetId(payload);
+    return {
+      ...payload,
+      id,
+      asset_url: payload.asset_url ?? payload.assetUrl ?? null,
+      status: payload.status ?? null,
+    };
+  }
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = unwrapMaterialHubAssetView(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const key of ['data', 'result', 'asset', 'item', 'record', 'body', 'payload']) {
+    if (payload[key] != null) {
+      const found = unwrapMaterialHubAssetView(payload[key], depth + 1);
+      if (found) return found;
+    }
+  }
+  if (Array.isArray(payload.items) && payload.items.length === 1) {
+    return unwrapMaterialHubAssetView(payload.items[0], depth + 1);
+  }
+  return null;
 }
 
 async function hubJson(path, ctx, { method, body, log } = {}) {
@@ -144,8 +218,6 @@ async function hubJson(path, ctx, { method, body, log } = {}) {
     method: method || 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      // 某些有缺陷的中转实现会错误地大小写敏感，这里双写做兼容
-      authorization: `Bearer ${token}`,
       Accept: 'application/json',
     },
   };
@@ -200,16 +272,46 @@ async function hubJson(path, ctx, { method, body, log } = {}) {
     }
     return { ok: false, status: res.status, error: detailStr };
   }
-  return { ok: true, data: json };
+  const bizErr = hubBusinessErrorMessage(json);
+  if (bizErr) {
+    if (log && typeof log.warn === 'function') {
+      log.warn('[JimengMaterialHub] HTTP 200 但业务失败（常见于图片 URL 无法被网关拉取）', {
+        path,
+        method: method || 'GET',
+        httpStatus: res.status,
+        hub_gateway: base,
+        register_image_url: body && body.url ? body.url : undefined,
+        response_preview: bizErr.slice(0, 2000),
+      });
+    }
+    return { ok: false, status: res.status, error: bizErr };
+  }
+  return { ok: true, data: json, status: res.status };
 }
 
 async function createImageAsset(ctx, params, log) {
   const name = String(params.name || 'c').replace(/\s+/g, '').slice(0, 12) || 'c';
-  return hubJson('/assets', ctx, {
+  const r = await hubJson('/assets', ctx, {
     method: 'POST',
     body: { url: params.url, asset_type: 'Image', name },
     log,
   });
+  if (!r.ok) return r;
+  const asset = unwrapMaterialHubAssetView(r.data);
+  if (asset?.id) return { ok: true, data: asset, status: r.status };
+  const keys =
+    r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? Object.keys(r.data).join(', ') : typeof r.data;
+  if (log && typeof log.warn === 'function') {
+    log.warn('[JimengMaterialHub] POST 成功但无法解析素材 id', {
+      response_keys: keys,
+      response_preview: JSON.stringify(r.data).slice(0, 800),
+    });
+  }
+  return {
+    ok: false,
+    status: r.status,
+    error: `素材库未返回素材 id（响应字段：${keys || '空'}）`,
+  };
 }
 
 /**
@@ -229,7 +331,11 @@ async function listAssets(ctx, opts = {}, log) {
 async function getAsset(ctx, assetId, log) {
   const id = encodeURIComponent(String(assetId || '').trim());
   if (!id) return { ok: false, error: '缺少 asset id' };
-  return hubJson(`/assets/${id}`, ctx, { method: 'GET', log });
+  const r = await hubJson(`/assets/${id}`, ctx, { method: 'GET', log });
+  if (!r.ok) return r;
+  const asset = unwrapMaterialHubAssetView(r.data);
+  if (asset?.id) return { ok: true, data: asset, status: r.status };
+  return { ok: true, data: r.data, status: r.status };
 }
 
 async function pollAssetUntilSettled(ctx, assetId, options = {}) {
@@ -258,6 +364,10 @@ function hubToken(cfg, db) {
 module.exports = {
   buildHubContext,
   hubToken,
+  normalizeMaterialHubToken,
+  tokenFingerprint,
+  hubBusinessErrorMessage,
+  unwrapMaterialHubAssetView,
   createImageAsset,
   listAssets,
   getAsset,

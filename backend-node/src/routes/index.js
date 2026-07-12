@@ -13,6 +13,7 @@ const characterRoutes = require('./characters');
 const uploadModule = require('./upload');
 const sceneRoutes = require('./scenes');
 const storyboardRoutes = require('./storyboards');
+const tailFrameLinkRoutes = require('./storyboards_tail_link');
 const imageRoutes = require('./images');
 const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
@@ -39,6 +40,7 @@ function setupRouter(cfg, db, log) {
   const uploadHandlers = uploadModule.routes(cfg, log, db);
   const scenes = sceneRoutes(db, log, cfg);
   const storyboards = storyboardRoutes(db, log);
+  const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
   const images = imageRoutes(db, cfg, log);
   const videos = videoRoutes(db, log);
   const videoMerges = videoMergeRoutes(db, log);
@@ -82,6 +84,7 @@ function setupRouter(cfg, db, log) {
   r.put('/dramas/:id/characters', drama.saveCharacters);
   r.put('/dramas/:id/episodes', drama.saveEpisodes);
   r.put('/dramas/:id/progress', drama.saveProgress);
+  r.put('/dramas/:id/canvas-layout', drama.saveCanvasLayout);
   r.get('/dramas/:id/props', drama.listProps);
   r.get('/dramas/:id', drama.getDrama);
   r.put('/dramas/:id', drama.updateDrama);
@@ -115,16 +118,20 @@ function setupRouter(cfg, db, log) {
     }
   });
 
-  // 故事生成：根据梗概 + 风格/类型 生成扩展剧本正文（不创建项目）
+  // 故事生成：带 drama_id 时异步生成并入库；否则同步返回 episodes（兼容旧调用）
   r.post('/generation/story', async (req, res) => {
     const storyGenerationService = require('../services/storyGenerationService');
     try {
       const body = req.body || {};
+      if (body.drama_id) {
+        const taskId = storyGenerationService.startStoryGeneration(db, log, body);
+        return response.success(res, { task_id: taskId, status: 'pending' });
+      }
       const result = await storyGenerationService.generateStory(db, log, body);
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
-      if (err.message && err.message.includes('未配置')) {
+      if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
         return response.badRequest(res, err.message);
       }
       response.internalError(res, err.message || '故事生成失败');
@@ -167,6 +174,8 @@ function setupRouter(cfg, db, log) {
   r.post('/characters/:id/add-to-material-library', characters.addToMaterialLibrary);
   r.post('/characters/:id/sd2-certify', characters.sd2Certify);
   r.post('/characters/:id/sd2-certify/refresh', characters.sd2CertifyRefresh);
+  r.post('/characters/:id/sd2-voice-upload', uploadModule.multerAudioSingle, characters.sd2VoiceUpload);
+  r.post('/characters/:id/sd2-voice-refresh', characters.sd2VoiceRefresh);
   r.post('/characters/:id/extract-from-image', characters.extractFromImage);
   r.post('/characters/:id/extract-anchors', characters.extractAnchors);
 
@@ -212,6 +221,7 @@ function setupRouter(cfg, db, log) {
 
   // ---------- tasks ----------
   r.get('/tasks/:task_id', task.getTaskStatus);
+  r.post('/tasks/:task_id/cancel', task.cancelTaskStatus);
   r.get('/tasks', task.getResourceTasks);
 
   // ---------- scenes ----------
@@ -271,6 +281,8 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/props', prop.associateProps);
   r.post('/storyboards/:id/frame-prompt', storyboards.framePrompt);
   r.get('/storyboards/:id/frame-prompts', storyboards.framePromptsGet);
+  r.put('/storyboards/:id/frame-prompts/:frame_type', storyboards.framePromptSave);
+  r.post('/storyboards/:id/link-tail-frame', tailFrameLink.linkTailFrame);
   r.post('/storyboards/:id/polish-prompt', storyboards.polishPrompt);
   r.post('/storyboards/:id/universal-segment-polish-stream', storyboards.polishUniversalSegmentStream);
   r.post('/storyboards/:id/classic-video-prompt-polish-stream', storyboards.polishClassicVideoPromptStream);
@@ -278,6 +290,9 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/universal-segment-prompt', storyboards.generateUniversalSegmentPrompt);
   r.post('/storyboards/batch-infer-params', storyboards.batchInferParams);
   r.post('/storyboards/:id/upscale', storyboards.upscale);
+  r.post('/storyboards/:id/regenerate-layout-description', storyboards.regenerateLayoutDescription);
+  r.post('/storyboards/:id/rebuild-video-prompt', storyboards.rebuildVideoPrompt);
+  r.post('/storyboards/:id/split-by-audio', storyboards.splitByAudio);
 
   // ---------- audio ----------
   r.post('/audio/extract', audio.extract);

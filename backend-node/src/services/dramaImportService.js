@@ -84,6 +84,30 @@ function saveMediaFile(storagePath, projectDir, category, files, zipPath, prefix
 /**
  * 批量保存 extra_image_files 数组，返回本地路径 JSON 字符串
  */
+const IMPORT_FIRST_FRAME_TYPES = ['storyboard_first', 'first', 'first_frame'];
+const IMPORT_LAST_FRAME_TYPES = ['storyboard_last', 'last', 'tail', 'last_frame'];
+
+/** 老版 ZIP 或未写入 frame_prompts 时，从已导入的首尾帧图生记录回填提示词 */
+function restoreFramePromptsFromImageGens(db, sbId, now, log) {
+  const insFp = db.prepare(
+    'INSERT INTO frame_prompts (storyboard_id, frame_type, prompt, description, layout, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  for (const [types, frameType] of [[IMPORT_FIRST_FRAME_TYPES, 'first'], [IMPORT_LAST_FRAME_TYPES, 'last']]) {
+    const has = db.prepare('SELECT id FROM frame_prompts WHERE storyboard_id = ? AND frame_type = ?').get(sbId, frameType);
+    if (has) continue;
+    const ph = types.map(() => '?').join(',');
+    const ig = db.prepare(
+      `SELECT prompt FROM image_generations WHERE storyboard_id = ? AND deleted_at IS NULL
+       AND frame_type IN (${ph}) AND prompt IS NOT NULL AND TRIM(prompt) != ''
+       ORDER BY created_at DESC LIMIT 1`
+    ).get(sbId, ...types);
+    if (ig?.prompt?.trim()) {
+      insFp.run(sbId, frameType, ig.prompt.trim(), null, null, now, now);
+      try { log?.info?.('[导入] 从分镜图历史恢复帧提示词', { storyboard_id: sbId, frame_type: frameType }); } catch (_) {}
+    }
+  }
+}
+
 function saveExtraImages(storagePath, projectDir, category, files, zipPaths, prefix) {
   if (!Array.isArray(zipPaths) || zipPaths.length === 0) return null;
   const localPaths = [];
@@ -236,7 +260,6 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
     if (!episodeId) continue;
 
     for (const sb of (ep.storyboards || [])) {
-      const sbImagePath = saveMediaFile(storagePath, projectDir, 'images', files, sb.image_file, 'sb_imp');
       const sbAudioPath = saveMediaFile(storagePath, projectDir, 'audio', files, sb.audio_file, 'sb_audio_imp');
       const sbNarrationAudioPath = saveMediaFile(storagePath, projectDir, 'audio', files, sb.narration_audio_file, 'sb_narr_audio_imp');
 
@@ -258,10 +281,18 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         .map(idx => propNewIds[idx])
         .filter(id => id != null);
 
-      const sbInfo = db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, dialogue, narration, action, atmosphere, result, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, image_prompt, polished_prompt, video_prompt, duration, emotion, emotion_intensity, segment_index, segment_title, continuity_snapshot, creation_mode, universal_segment_text, characters, audio_local_path, narration_audio_local_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
+      // 先插入分镜（首尾帧绑定ID、layout 稍后更新；image_url/local_path 由绑定逻辑设置）
+      // 使用并行数组维护列名与值，确保列数与传参数量永远一致，避免“44 values for 43 columns”类错误
+      const sbCols = [
+        'episode_id', 'scene_id', 'storyboard_number', 'title', 'description', 'location', 'time',
+        'dialogue', 'narration', 'action', 'atmosphere', 'result', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s',
+        'movement', 'lighting_style', 'depth_of_field', 'image_prompt', 'polished_prompt', 'video_prompt', 'duration',
+        'emotion', 'emotion_intensity', 'segment_index', 'segment_title', 'continuity_snapshot', 'creation_mode',
+        'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id',
+        'last_frame_image_url', 'last_frame_local_path', 'image_url', 'local_path', 'characters',
+        'audio_local_path', 'narration_audio_local_path', 'created_at', 'updated_at'
+      ];
+      const sbVals = [
         episodeId,
         sbSceneId,
         sb.storyboard_number || 1,
@@ -293,12 +324,26 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         sb.continuity_snapshot || null,
         sb.creation_mode === 'universal' ? 'universal' : 'classic',
         sb.universal_segment_text || null,
+        sb.layout_description || null,
+        null, // first_frame_image_id 后设
+        null, // last_frame_image_id 后设
+        sb.last_frame_image_url || null,
+        sb.last_frame_local_path || null,
+        null, // image_url 由首帧绑定设置
+        null, // local_path 由首帧绑定设置
         charactersJson,
         sbAudioPath || null,
         sbNarrationAudioPath || null,
         now,
         now
-      );
+      ];
+      if (sbCols.length !== sbVals.length) {
+        throw new Error(`storyboards 导入列数不匹配: cols=${sbCols.length}, vals=${sbVals.length}`);
+      }
+      const sbInfo = db.prepare(
+        `INSERT INTO storyboards (${sbCols.join(', ')})
+         VALUES (${sbCols.map(() => '?').join(', ')})`
+      ).run(...sbVals);
       const sbId = sbInfo.lastInsertRowid;
 
       // 还原 storyboard_props（分镜与道具的关联）
@@ -307,15 +352,59 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         for (const pid of sbPropNewIds) insSP.run(sbId, pid);
       }
 
-      // 导入分镜图（写入 image_generations）
-      if (sbImagePath) {
-        db.prepare(
-          `INSERT INTO image_generations (drama_id, storyboard_id, provider, prompt, status, local_path, created_at, updated_at)
-           VALUES (?, ?, 'imported', ?, 'completed', ?, ?, ?)`
-        ).run(dramaId, sbId, sb.image_prompt || '', sbImagePath, now, now);
+      // 还原帧提示词（首尾帧/关键帧专用提示词 + layout 合同，必须恢复）
+      if (Array.isArray(sb.frame_prompts) && sb.frame_prompts.length > 0) {
+        const insFp = db.prepare('INSERT INTO frame_prompts (storyboard_id, frame_type, prompt, description, layout, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        for (const fp of sb.frame_prompts) {
+          insFp.run(sbId, fp.frame_type || 'first', fp.prompt || '', fp.description || null, fp.layout || null, fp.created_at || now, fp.updated_at || now);
+        }
+        try { require('../logger').info?.('[导入] 已恢复帧提示词', { storyboard_id: sbId, count: sb.frame_prompts.length }); } catch (_) {}
       }
 
-      // 导入视频
+      // 导入分镜图片完整历史（新版 v1.4+ 的 image_generations 数组；老版回退单张）
+      const genOldToNew = new Map(); // original_id -> {newId, localPath}
+      if (Array.isArray(sb.image_generations) && sb.image_generations.length > 0) {
+        for (const gen of sb.image_generations) {
+          const genLocalPath = saveMediaFile(storagePath, projectDir, 'images', files, gen.zip_file || gen.file, 'sb_imp_gen');
+          if (genLocalPath) {
+            const genInfo = db.prepare(
+              `INSERT INTO image_generations (drama_id, storyboard_id, provider, prompt, negative_prompt, model, frame_type, size, quality, status, error_msg, local_path, created_at, updated_at, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).run(
+              dramaId,
+              sbId,
+              gen.provider || 'imported',
+              gen.prompt || sb.image_prompt || '',
+              gen.negative_prompt || null,
+              gen.model || null,
+              gen.frame_type || null,
+              gen.size || null,
+              gen.quality || null,
+              gen.status || 'completed',
+              gen.error_msg || null,
+              genLocalPath,
+              gen.created_at || now,
+              now,
+              gen.completed_at || now
+            );
+            const newGenId = genInfo.lastInsertRowid;
+            if (gen.original_id != null) {
+              genOldToNew.set(Number(gen.original_id), { newId: newGenId, localPath: genLocalPath });
+            }
+          }
+        }
+      } else {
+        // 老版兼容：仅单张 image_file（导入后只有这一个历史图，首尾帧绑定丢失是旧行为）
+        const sbImagePath = saveMediaFile(storagePath, projectDir, 'images', files, sb.image_file, 'sb_imp');
+        if (sbImagePath) {
+          db.prepare(
+            `INSERT INTO image_generations (drama_id, storyboard_id, provider, prompt, status, local_path, created_at, updated_at)
+             VALUES (?, ?, 'imported', ?, 'completed', ?, ?, ?)`
+          ).run(dramaId, sbId, sb.image_prompt || '', sbImagePath, now, now);
+        }
+      }
+
+      // 导入视频（仍保持单条最新，视频首尾帧 URL 由生成时绑定）
       if (sb.video_file) {
         const videoLocalPath = saveMediaFile(storagePath, projectDir, 'videos', files, sb.video_file, 'vid_imp');
         if (videoLocalPath) {
@@ -325,6 +414,41 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
           ).run(dramaId, sbId, sb.video_prompt || '', videoLocalPath, now, now);
         }
       }
+
+      // 绑定首尾帧到 storyboards（关键：恢复 first_frame_image_id + image_url/local_path，以及 last_*）
+      const now2 = new Date().toISOString();
+      const firstOld = sb.first_frame_image_original_id ?? sb.first_frame_image_id;
+      const lastOld = sb.last_frame_image_original_id ?? sb.last_frame_image_id;
+      let boundFirst = false, boundLast = false;
+      if (firstOld != null && genOldToNew.has(Number(firstOld))) {
+        const { newId, localPath } = genOldToNew.get(Number(firstOld));
+        db.prepare(
+          `UPDATE storyboards SET image_url = ?, local_path = ?, first_frame_image_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`
+        ).run(null, localPath, newId, now2, sbId);
+        boundFirst = true;
+      }
+      if (lastOld != null && genOldToNew.has(Number(lastOld))) {
+        const { newId, localPath } = genOldToNew.get(Number(lastOld));
+        db.prepare(
+          `UPDATE storyboards SET last_frame_image_url = ?, last_frame_local_path = ?, last_frame_image_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`
+        ).run(null, localPath, newId, now2, sbId);
+        boundLast = true;
+      }
+      if ((sb.image_generations && sb.image_generations.length) || boundFirst || boundLast) {
+        try {
+          require('../logger').info?.('[导入] 分镜图片历史+首尾帧绑定完成', {
+            storyboard_id: sbId,
+            gens_restored: genOldToNew.size,
+            first_bound: boundFirst,
+            last_bound: boundLast,
+            had_original_first: firstOld != null,
+            had_original_last: lastOld != null
+          });
+        } catch (_) {}
+      }
+
+      // 兼容老工程：ZIP 无 frame_prompts 时，用已导入的首/尾帧图生 prompt 回填
+      restoreFramePromptsFromImageGens(db, sbId, now2, log);
     }
   }
 

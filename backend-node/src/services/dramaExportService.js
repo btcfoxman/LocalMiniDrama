@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
 
-const EXPORT_VERSION = '1.3';
+const EXPORT_VERSION = '1.4';  // 1.4: 完整导出分镜图片历史（含首尾帧 first/last 绑定）、frame_prompts、layout_description 等，支持导入后恢复首尾帧模式数据
 
 function getStoragePath(cfg) {
   const raw = cfg?.storage?.local_path || './data/storage';
@@ -34,6 +34,34 @@ function parseExtraImages(raw) {
     const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
     return Array.isArray(arr) ? arr.filter(Boolean) : [];
   } catch (_) { return []; }
+}
+
+const EXPORT_FIRST_FRAME_TYPES = ['storyboard_first', 'first', 'first_frame'];
+const EXPORT_LAST_FRAME_TYPES = ['storyboard_last', 'last', 'tail', 'last_frame'];
+
+/** frame_prompts 表无记录时，从首尾帧图生历史补全导出（避免仅生过图、未单独存帧提示词时丢失） */
+function supplementFramePromptsFromImageGens(db, sbId, fps) {
+  const out = Array.isArray(fps) ? [...fps] : [];
+  const hasType = (t) => out.some((f) => f && f.frame_type === t);
+  const pickPrompt = (types) => {
+    const ph = types.map(() => '?').join(',');
+    const row = db.prepare(
+      `SELECT prompt FROM image_generations WHERE storyboard_id = ? AND deleted_at IS NULL
+       AND frame_type IN (${ph}) AND prompt IS NOT NULL AND TRIM(prompt) != ''
+       ORDER BY created_at DESC LIMIT 1`
+    ).get(sbId, ...types);
+    return (row?.prompt || '').trim();
+  };
+  const now = new Date().toISOString();
+  if (!hasType('first')) {
+    const p = pickPrompt(EXPORT_FIRST_FRAME_TYPES);
+    if (p) out.push({ frame_type: 'first', prompt: p, description: null, layout: null, created_at: now, updated_at: now });
+  }
+  if (!hasType('last')) {
+    const p = pickPrompt(EXPORT_LAST_FRAME_TYPES);
+    if (p) out.push({ frame_type: 'last', prompt: p, description: null, layout: null, created_at: now, updated_at: now });
+  }
+  return out;
 }
 
 /** 解析 storyboard.characters JSON 字段，返回 ID 数组 */
@@ -73,20 +101,41 @@ function exportDrama(db, cfg, log, dramaId) {
     ).all(ep.id);
   }
 
-  // ---- 4. 读取分镜图和视频（取最新完成的） ----
+  // ---- 4. 读取分镜图（完整历史 + 首尾帧 first/last）和视频（取最新完成的） ----
   const allSbIds = Object.values(storyboardsByEp).flat().map(s => s.id);
-  const imagesBySb = {};
+  const allImagesBySb = {};  // sbId -> 所有 image_generations 记录（用于导出历史和首尾帧绑定）
   const videosBySb = {};
   for (const sbId of allSbIds) {
-    const ig = db.prepare(
-      "SELECT local_path FROM image_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
-    ).get(sbId);
-    if (ig && ig.local_path) imagesBySb[sbId] = ig;
+    // 导出所有非删除的图片生成记录（含历史、首尾帧、各种 frame_type），仅打包有 local_path 的文件
+    const igs = db.prepare(
+      "SELECT * FROM image_generations WHERE storyboard_id = ? AND deleted_at IS NULL ORDER BY created_at ASC"
+    ).all(sbId);
+    allImagesBySb[sbId] = igs.filter(ig => ig && ig.local_path);
 
     const vg = db.prepare(
       "SELECT video_url, local_path FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
     ).get(sbId);
     if (vg) videosBySb[sbId] = vg;
+  }
+
+  // 收集需要打包的分镜图片文件（完整历史）
+  const imageFilesToPack = [];
+  for (const [sbIdStr, igs] of Object.entries(allImagesBySb)) {
+    const sbId = Number(sbIdStr);
+    for (const ig of igs) {
+      if (!ig.local_path) continue;
+      const zipPath = `media/storyboards/sb_${sbId}_gen_${ig.id}${extOf(ig.local_path)}`;
+      imageFilesToPack.push({ localRelPath: ig.local_path, zipPath });
+    }
+  }
+
+  // 预查询各分镜的帧提示词（首尾帧专用提示词编辑器内容，必须导出否则导入后丢失）
+  const framePromptsBySb = {};
+  for (const sbId of allSbIds) {
+    try {
+      const fps = db.prepare('SELECT frame_type, prompt, description, layout, created_at, updated_at FROM frame_prompts WHERE storyboard_id = ? ORDER BY created_at ASC').all(sbId);
+      framePromptsBySb[sbId] = supplementFramePromptsFromImageGens(db, sbId, fps);
+    } catch (_) { framePromptsBySb[sbId] = []; }
   }
 
   // ---- 5. 读取角色 ----
@@ -172,8 +221,10 @@ function exportDrama(db, cfg, log, dramaId) {
         script_content: ep.script_content,
         duration: ep.duration,
         storyboards: sbs.map(sb => {
-          const ig = imagesBySb[sb.id];
-          const sbImageFile = ig ? `media/storyboards/sb_${sb.id}${extOf(ig.local_path)}` : null;
+          const igsForThis = allImagesBySb[sb.id] || [];
+          // 兼容：仍提供 image_file（指向首帧或最新一张），旧版导入器可继续工作
+          let mainIg = igsForThis.find(g => g.id === sb.first_frame_image_id) || igsForThis[igsForThis.length - 1];
+          const sbImageFile = mainIg ? `media/storyboards/sb_${sb.id}_gen_${mainIg.id}${extOf(mainIg.local_path)}` : null;
           const vg = videosBySb[sb.id];
           const sbVideoFile = vg && vg.local_path ? `media/videos/sb_${sb.id}${extOf(vg.local_path)}` : null;
           const sbAudioFile = sb.audio_local_path
@@ -228,6 +279,12 @@ function exportDrama(db, cfg, log, dramaId) {
             continuity_snapshot: sb.continuity_snapshot || null,
             creation_mode: sb.creation_mode === 'universal' ? 'universal' : 'classic',
             universal_segment_text: sb.universal_segment_text || null,
+            layout_description: sb.layout_description || null,
+            // 用 original_id 记录首尾帧绑定的 image_generations 旧ID，导入时映射回新ID
+            first_frame_image_original_id: sb.first_frame_image_id ?? null,
+            last_frame_image_original_id: sb.last_frame_image_id ?? null,
+            last_frame_image_url: sb.last_frame_image_url || null,
+            last_frame_local_path: sb.last_frame_local_path || null,
             character_indices: characterIndices,
             scene_index: sceneIndex,
             prop_indices: propIndices,
@@ -235,6 +292,25 @@ function exportDrama(db, cfg, log, dramaId) {
             video_file: sbVideoFile,
             audio_file: sbAudioFile,
             narration_audio_file: sbNarrationAudioFile,
+            // 完整分镜图片历史（含首尾帧），导入后可恢复 getSbAllImages + 绑定
+            image_generations: igsForThis.map(ig => ({
+              original_id: ig.id,
+              provider: ig.provider || 'imported',
+              prompt: ig.prompt || null,
+              negative_prompt: ig.negative_prompt || null,
+              model: ig.model || null,
+              frame_type: ig.frame_type || null,
+              size: ig.size || null,
+              quality: ig.quality || null,
+              status: ig.status || 'completed',
+              error_msg: ig.error_msg || null,
+              created_at: ig.created_at || null,
+              updated_at: ig.updated_at || null,
+              completed_at: ig.completed_at || null,
+              zip_file: `media/storyboards/sb_${sb.id}_gen_${ig.id}${extOf(ig.local_path)}`,
+            })),
+            // 首尾帧提示词编辑器保存的专业提示词（含 layout）
+            frame_prompts: framePromptsBySb[sb.id] || [],
           };
         }),
       };
@@ -301,13 +377,11 @@ function exportDrama(db, cfg, log, dramaId) {
   const zip = new AdmZip();
   zip.addFile('project.json', Buffer.from(JSON.stringify(zipData, null, 2), 'utf8'));
 
-  // 分镜图（从 image_generations 取）
-  for (const [sbId, ig] of Object.entries(imagesBySb)) {
-    if (ig.local_path) {
-      const abs = localPathToAbs(storagePath, ig.local_path);
-      const buf = safeReadFile(abs);
-      if (buf) zip.addFile(`media/storyboards/sb_${sbId}${extOf(ig.local_path)}`, buf);
-    }
+  // 分镜图片完整历史（含首尾帧 first/last 专用图 + 所有历史生成）
+  for (const { localRelPath, zipPath } of imageFilesToPack) {
+    const abs = localPathToAbs(storagePath, localRelPath);
+    const buf = safeReadFile(abs);
+    if (buf) zip.addFile(zipPath, buf);
   }
 
   // 分镜视频

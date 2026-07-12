@@ -1,9 +1,10 @@
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { propAPI } from '@/api/props'
 import { propLibraryAPI } from '@/api/propLibrary'
 import { uploadAPI } from '@/api/upload'
-import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership, markAssetInLibrary } from './libraryMembership'
+import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
+import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 
 /**
  * 道具管理 Composable
@@ -16,10 +17,25 @@ import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership,
  * @param {Function} deps.pollTask
  * @param {Function} deps.pollUntilResourceHasImage
  * @param {Function} deps.hasAssetImage
- * @param {Function} [deps.getAssetImageModel]
  */
 export function useProps(deps) {
-  const { store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const { store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage } = deps
+  const genStore = useGenerationTaskStore()
+
+  function buildPropImageMeta(prop) {
+    const dramaTitle = store.drama?.title || ''
+    const epNum = store.currentEpisode?.episode_number
+    const epLabel = dramaTitle ? `${dramaTitle} · 第${epNum ?? ''}集` : `第${epNum ?? ''}集`
+    return {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle,
+      episodeNumber: epNum,
+      resourceType: GEN_RESOURCE.PROP_IMAGE,
+      resourceId: prop.id,
+      label: `${epLabel} 道具图: ${prop.name || prop.id}`,
+    }
+  }
 
   function dataUrlToFile(dataUrl, filename) {
     const arr = dataUrl.split(',')
@@ -71,7 +87,9 @@ export function useProps(deps) {
   const extractingPropAddDesc = ref(false)
 
   // ── 道具生成状态 ──────────────────────────────────────
-  const propsExtracting = ref(false)
+  const propsExtracting = computed(() =>
+    isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.EXTRACT_PROPS)
+  )
   const generatingPropIds = reactive(new Set())
 
   // ── 道具库状态 ────────────────────────────────────────
@@ -88,8 +106,17 @@ export function useProps(deps) {
   const addingPropToLibraryId = ref(null)
   const addingPropToMaterialId = ref(null)
   const addingPropFromLibraryId = ref(null)
-  const propMembership = createLibraryMembershipState()
   let propLibraryKeywordTimer = null
+
+  const propLibraryTab = ref('library')
+  const dramaAllPropList = ref([])
+  const dramaAllPropLoading = ref(false)
+  const dramaAllPropPage = ref(1)
+  const dramaAllPropPageSize = ref(20)
+  const dramaAllPropTotal = ref(0)
+  const dramaAllPropKeyword = ref('')
+  let dramaAllPropKeywordTimer = null
+
 
   // ── 函数 ──────────────────────────────────────────────
   async function onExtractProps() {
@@ -97,12 +124,14 @@ export function useProps(deps) {
       ElMessage.warning('请先完成剧本并保存')
       return
     }
-    propsExtracting.value = true
+    const epId = currentEpisodeId.value
+    const meta = buildExtractTaskMeta(store, dramaId.value, epId, GEN_RESOURCE.EXTRACT_PROPS, '提取道具')
+    genStore.markRunning(meta)
     try {
-      const res = await propAPI.extractFromScript(currentEpisodeId.value)
+      const res = await propAPI.extractFromScript(epId)
       const taskId = res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama())
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
         if (pollRes?.status !== 'failed') {
           ElMessage.success('道具提取完成')
         }
@@ -113,7 +142,7 @@ export function useProps(deps) {
     } catch (e) {
       ElMessage.error(e.message || '提取失败')
     } finally {
-      propsExtracting.value = false
+      genStore.markDone(meta)
     }
   }
 
@@ -132,7 +161,6 @@ export function useProps(deps) {
       image_url: prop.image_url || '',
       local_path: prop.local_path || '',
       ref_image: prop.ref_image || '',
-      negative_prompt: prop.negative_prompt || '',
     }
     showEditProp.value = true
     if (!prop.prompt && prop.id && prop.description) {
@@ -227,8 +255,7 @@ export function useProps(deps) {
         name: editPropForm.value.name?.trim(),
         type: editPropForm.value.type || undefined,
         description: editPropForm.value.description || undefined,
-        prompt: editPropForm.value.prompt || undefined,
-        negative_prompt: (editPropForm.value.negative_prompt || '').trim() || null,
+        prompt: editPropForm.value.prompt || undefined
       })
       await savePropRefImageIfAny(editPropForm.value.id)
       await loadDrama()
@@ -296,15 +323,17 @@ export function useProps(deps) {
     }
   }
 
-  async function onGeneratePropImage(prop) {
+  async function onGeneratePropImage(prop, useQuadGrid = false) {
     prop.errorMsg = ''
     prop.error_msg = ''
+    const meta = buildPropImageMeta(prop)
     generatingPropIds.add(prop.id)
+    genStore.markRunning(meta)
     try {
-      const res = await propAPI.generateImage(prop.id, getAssetImageModel?.(), getSelectedStyle())
+      const res = await propAPI.generateImage(prop.id, undefined, getSelectedStyle(), !!useQuadGrid)
       const taskId = res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama())
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
         if (pollRes?.status === 'failed') {
           prop.errorMsg = pollRes.error || '生成失败'
         } else {
@@ -325,6 +354,7 @@ export function useProps(deps) {
       ElMessage.error(e.message || '提交失败')
     } finally {
       generatingPropIds.delete(prop.id)
+      genStore.markDone(meta)
     }
   }
 
@@ -356,6 +386,68 @@ export function useProps(deps) {
       propLibraryPage.value = 1
       loadPropLibraryList()
     }, 300)
+  }
+
+  async function loadDramaAllPropList() {
+    if (!dramaId.value) {
+      dramaAllPropList.value = []
+      dramaAllPropTotal.value = 0
+      return
+    }
+    dramaAllPropLoading.value = true
+    try {
+      const res = await propAPI.list(dramaId.value)
+      let list = Array.isArray(res) ? res : (res?.items ?? res?.props ?? [])
+      const kw = (dramaAllPropKeyword.value || '').trim().toLowerCase()
+      if (kw) {
+        list = list.filter((p) => {
+          const name = (p.name || '').toLowerCase()
+          const desc = (p.description || '').toLowerCase()
+          const prompt = (p.prompt || '').toLowerCase()
+          return name.includes(kw) || desc.includes(kw) || prompt.includes(kw)
+        })
+      }
+      dramaAllPropTotal.value = list.length
+      const start = (dramaAllPropPage.value - 1) * dramaAllPropPageSize.value
+      dramaAllPropList.value = list.slice(start, start + dramaAllPropPageSize.value)
+    } catch {
+      dramaAllPropList.value = []
+      dramaAllPropTotal.value = 0
+    } finally {
+      dramaAllPropLoading.value = false
+    }
+  }
+
+  function debouncedLoadDramaAllPropList() {
+    if (dramaAllPropKeywordTimer) clearTimeout(dramaAllPropKeywordTimer)
+    dramaAllPropKeywordTimer = setTimeout(() => {
+      dramaAllPropPage.value = 1
+      loadDramaAllPropList()
+    }, 300)
+  }
+
+  function onPropLibraryDialogOpen() {
+    if (propLibraryTab.value === 'library') loadPropLibraryList()
+    else if (propLibraryTab.value === 'drama') loadDramaAllPropList()
+    
+  }
+
+  function onPropLibraryTabChange() {
+    if (propLibraryTab.value === 'library') {
+      propLibraryPage.value = 1
+      loadPropLibraryList()
+    } else if (propLibraryTab.value === 'drama') {
+      dramaAllPropPage.value = 1
+      loadDramaAllPropList()
+    } 
+  }
+
+  function propAddToEpisodeLoadingKey(scope, id) {
+    return `${scope}-${id}`
+  }
+
+  function isPropAddToEpisodeLoading(scope, id) {
+    return addingPropFromLibraryId.value === propAddToEpisodeLoadingKey(scope, id)
   }
 
   function openEditPropLibrary(item) {
@@ -410,7 +502,6 @@ export function useProps(deps) {
     addingPropToLibraryId.value = prop.id
     try {
       await propAPI.addToLibrary(prop.id, {})
-      markAssetInLibrary(propMembership.dramaSourceIds, prop)
       ElMessage.success('已加入本剧道具库')
       if (showPropLibrary.value) loadPropLibraryList()
     } catch (e) {
@@ -425,7 +516,6 @@ export function useProps(deps) {
     addingPropToMaterialId.value = prop.id
     try {
       await propAPI.addToMaterialLibrary(prop.id)
-      markAssetInLibrary(propMembership.materialSourceIds, prop)
       ElMessage.success('已加入全局素材库')
     } catch (e) {
       ElMessage.error(e.message || '加入失败')
@@ -434,28 +524,13 @@ export function useProps(deps) {
     }
   }
 
-  async function loadPropLibraryMembership() {
-    await loadLibraryMembership({
-      api: propLibraryAPI,
-      sourceType: 'prop',
-      assets: store.props || [],
-      dramaId: dramaId.value,
-      dramaSourceIds: propMembership.dramaSourceIds,
-      materialSourceIds: propMembership.materialSourceIds,
-    })
-  }
-
-  function isPropInLibrary(prop) {
-    return hasAssetInLibrary(propMembership.dramaSourceIds, prop)
-  }
-
-  function isPropInMaterialLibrary(prop) {
-    return hasAssetInLibrary(propMembership.materialSourceIds, prop)
-  }
-
-  async function onAddPropFromLibrary(item) {
-    if (!store.dramaId || !currentEpisodeId.value) return
-    addingPropFromLibraryId.value = item.id
+  async function addPropToEpisode(item, scope) {
+    if (!store.dramaId || !currentEpisodeId.value) {
+      ElMessage.warning('请先选择本集')
+      return
+    }
+    const loadingKey = propAddToEpisodeLoadingKey(scope, item.id)
+    addingPropFromLibraryId.value = loadingKey
     try {
       const existingProp = (store.props || []).find((p) => p.name === item.name)
       if (existingProp) {
@@ -487,6 +562,18 @@ export function useProps(deps) {
     } finally {
       addingPropFromLibraryId.value = null
     }
+  }
+
+  function onAddPropFromLibrary(item) {
+    return addPropToEpisode(item, 'library')
+  }
+
+  function onAddDramaPropToEpisode(item) {
+    return addPropToEpisode(item, 'drama')
+  }
+
+  function onAddTeamPropToEpisode(item) {
+    return addPropToEpisode(item, 'team')
   }
 
   // ── 添加道具简单弹窗的参考图 extract ─────────────────
@@ -535,11 +622,25 @@ export function useProps(deps) {
     propLibraryPageSize,
     propLibraryTotal,
     propLibraryKeyword,
+    propLibraryTab,
+    dramaAllPropList,
+    dramaAllPropLoading,
+    dramaAllPropPage,
+    dramaAllPropPageSize,
+    dramaAllPropTotal,
+    dramaAllPropKeyword,
+
+
+
+
+
+
     showEditPropLibrary,
     editPropLibraryForm,
     editPropLibrarySaving,
     addingPropToLibraryId,
     addingPropToMaterialId,
+
     addingPropFromLibraryId,
     // 函数
     onExtractProps,
@@ -554,17 +655,26 @@ export function useProps(deps) {
     onClosePropDialog,
     onDeleteProp,
     onGeneratePropImage,
-    loadPropLibraryMembership,
-    isPropInLibrary,
-    isPropInMaterialLibrary,
     loadPropLibraryList,
     debouncedLoadPropLibrary,
+    loadDramaAllPropList,
+    debouncedLoadDramaAllPropList,
+
+
+    onPropLibraryDialogOpen,
+    onPropLibraryTabChange,
+    isPropAddToEpisodeLoading,
     openEditPropLibrary,
     submitEditPropLibrary,
     onDeletePropLibrary,
     onAddPropToLibrary,
     onAddPropToMaterialLibrary,
+
+
+
     onAddPropFromLibrary,
+    onAddDramaPropToEpisode,
+
     doExtractFromRef2,
   }
 }

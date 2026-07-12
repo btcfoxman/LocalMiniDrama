@@ -79,8 +79,23 @@
 **视频生成：**
 | 模型名 | 说明 |
 |--------|------|
-| `wan2.1-t2v-turbo` | 文字转视频，速度较快 |
-| `wan2.1-t2v-plus` | 更高质量 |
+| `happyhorse-1.1-t2v` | HappyHorse 1.1 文生有声视频，3–15 秒，720P/1080P |
+| `happyhorse-1.1-i2v` | HappyHorse 1.1 首帧图生有声视频；输出比例跟随首帧 |
+| `happyhorse-1.1-r2v` | HappyHorse 1.1 多参考图生视频，支持 1–9 张参考图 |
+| `happyhorse-1.0-t2v` | HappyHorse 1.0 文生视频兼容模型 |
+| `happyhorse-1.0-i2v` | HappyHorse 1.0 首帧图生视频兼容模型 |
+| `happyhorse-1.0-r2v` | HappyHorse 1.0 多参考图生视频兼容模型 |
+| `wan2.6-t2v` | 通义万相文生视频 |
+| `wan2.6-i2v-flash` | 通义万相首帧图生视频 |
+| `wan2.6-r2v-flash` | 通义万相参考生视频 |
+
+> HappyHorse 使用 DashScope 异步任务协议。模型、Base URL 与 API Key 必须属于同一地域；北京/新加坡业务空间可直接填写对应的专属域名。项目支持 HappyHorse 的 T2V、I2V、R2V；`happyhorse-1.0-video-edit` 需要输入视频素材，不属于当前分镜生成流程。
+
+**HappyHorse 与项目模式对应关系：**
+
+- `*-t2v`：纯提示词生成；发送 `resolution`、`ratio`、`duration`、`watermark`。
+- `*-i2v`：经典分镜的主图/首帧作为 `media.type=first_frame`；比例由图片决定。
+- `*-r2v`：适合分镜「全能模式」；场景、角色、道具参考图作为 `media.type=reference_image`，最多 9 张；提示词中的 `@图片1` 会自动转换为 `[Image 1]`。
 
 ### 配置示例
 
@@ -88,9 +103,9 @@
 
 ```
 服务商：DashScope
-Base URL：https://dashscope.aliyuncs.com/compatible-mode/v1
+Base URL：https://dashscope.aliyuncs.com
 API Key：sk-xxxxxxxxxxxxxxxx
-模型：qwen-plus（文本）/ wanx2.1-t2i-turbo（图片）/ wan2.1-t2v-turbo（视频）
+模型：文本配置使用 qwen-plus；视频配置可使用 happyhorse-1.1-i2v
 ```
 
 ---
@@ -131,10 +146,11 @@ API Key：sk-xxxxxxxxxxxxxxxx
 
 > ⚠️ 配置中填写模型名时，系统会自动映射到正确的 API 端点 ID，两种写法均可。
 
-**分镜「全能模式」与接口规范（v1.2.5+）：**
+**分镜「全能模式」与接口规范（v1.2.5+，v1.2.7 增强校验）：**
 
-- 制作页单个分镜可切换为 **「全能模式」**：中间编辑区为**片段描述**，可用 **`@图片1`、`@图片2`…** 对应参考图顺序（一般为场景 → 角色 → 物品 → 分镜主图；`@图片N` 后建议加**半角空格**）。若该框有内容，生视频时**只发送这段文本**，不会拼接下方结构化「视频提示词」。
+- 制作页单个分镜可切换为 **「全能模式」**：中间编辑区为**片段描述**，可用 **`@图片1`、`@图片2`…** 对应参考图顺序（一般为场景 → 角色 → 物品；不含经典分镜中间主图；`@图片N` 后建议加**半角空格**）。若该框有内容，生视频时**只发送这段文本**，不会拼接下方结构化「视频提示词」。
 - 在 **AI 配置 → 视频生成** 中，将 **接口规范** 选为 **`volcengine_omni`**（火山即梦 Seedance 2.0 等多图参考）或 **`kling_omni`**（可灵 Omni）。Seedance **2.x** 单段时长由后端吸附到 **4–15 秒**；方舟多图侧最多 **9** 张参考图。
+- **v1.2.7**：单条生视频前会检测配置是否匹配（`kling_omni`，或 `volcengine_omni` + Seedance 2.x 模型名）；不匹配时弹窗说明，可选强制继续（降级为场景图 / 分镜主图参考）。**经典模式**无分镜参考图时会提示先生成分镜图，不提供纯文案强行生成。
 - 亦可使用 **可灵 Omni** 走同一套全能分镜工作流，详见 AI 配置页内嵌说明。
 
 ### 配置示例
@@ -191,8 +207,26 @@ API Key：your-api-key
 在「AI 配置」页面，点击顶部的：
 - **「一键配置通义」** — 自动创建阿里云 DashScope 的文本/图片/视频三套配置模板
 - **「一键配置火山」** — 自动创建火山引擎的文本/图片/视频三套配置模板
+- **「一键配置 Agnes」**（v1.2.8+）— 自动创建 Agnes AI 的文本/图片/视频三套配置模板（`agnes-2.0-flash` / `agnes-image-2.1-flash` / `agnes-video-v2.0`）
 
 一键配置后，只需填入你的 API Key，其他参数已预填好，点击「保存」即可使用。
+
+---
+
+## 图床配置（v1.2.8+）
+
+部分 AI 接口（如 Gemini 图生、Seedance 2.0 角色认证）需要将本地图片上传到公网图床。可在 `backend-node/configs/config.yaml` 的 `image_proxy` 段配置：
+
+```yaml
+image_proxy:
+  expire_hours: 2              # 缓存有效期（小时）
+  use_for_video: true
+  upload_timeout_seconds: 180  # 上传超时（秒），默认 180
+  upload_max_attempts: 2       # 失败重试次数
+  # upload_url: https://your-proxy.example.com/api/upload
+```
+
+未配置 `upload_url` 时使用内置默认中转地址。缓存 URL 在使用前会探测是否仍有效，失效则自动重新上传。
 
 ---
 

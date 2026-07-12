@@ -7,16 +7,6 @@ import request from '@/utils/request'
  * @returns {Promise<{ universal_segment_text: string }>}
  */
 function postUniversalSegmentNdjsonStream(url, body, onDelta) {
-  return postStoryboardNdjsonStream(url, body, onDelta, (obj) => obj.universal_segment_text).then(({ finalText }) => ({
-    universal_segment_text: finalText,
-  }))
-}
-
-/**
- * NDJSON 流式（通用）：解析 done 时从 pickDone(obj) 取最终字符串
- * @param {(obj: object) => string} pickDone
- */
-function postStoryboardNdjsonStream(url, body, onDelta, pickDone) {
   return fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
@@ -58,8 +48,7 @@ function postStoryboardNdjsonStream(url, body, onDelta, pickDone) {
         if (obj.type === 'delta' && obj.text && typeof onDelta === 'function') onDelta(String(obj.text))
         if (obj.type === 'error') throw new Error(obj.message || '请求失败')
         if (obj.type === 'done') {
-          const picked = typeof pickDone === 'function' ? pickDone(obj) : ''
-          finalText = (picked && String(picked).trim()) || ''
+          finalText = (obj.universal_segment_text && String(obj.universal_segment_text).trim()) || ''
         }
       }
     }
@@ -68,15 +57,12 @@ function postStoryboardNdjsonStream(url, body, onDelta, pickDone) {
       try {
         const obj = JSON.parse(tail)
         if (obj.type === 'error') throw new Error(obj.message || '请求失败')
-        if (obj.type === 'done') {
-          const picked = typeof pickDone === 'function' ? pickDone(obj) : ''
-          finalText = (picked && String(picked).trim()) || finalText
-        }
+        if (obj.type === 'done') finalText = (obj.universal_segment_text && String(obj.universal_segment_text).trim()) || finalText
       } catch (e) {
         if (e instanceof Error && e.message && !e.message.includes('JSON')) throw e
       }
     }
-    return { finalText }
+    return { universal_segment_text: finalText }
   })
 }
 
@@ -95,6 +81,13 @@ export const storyboardsAPI = {
   },
   generateFramePrompt(id, data) {
     return request.post(`/storyboards/${id}/frame-prompt`, data)
+  },
+  getFramePrompts(id) {
+    return request.get(`/storyboards/${id}/frame-prompts`)
+  },
+  /** 保存/覆盖首帧或尾帧提示词（用于用户手动编辑后保存） */
+  saveFramePrompt(id, frameType, data) {
+    return request.put(`/storyboards/${id}/frame-prompts/${frameType}`, data || {})
   },
   polishPrompt(id) {
     return request.post(`/storyboards/${id}/polish-prompt`, {})
@@ -122,17 +115,6 @@ export const storyboardsAPI = {
       onDelta
     )
   },
-  /**
-   * 经典分镜：流式润色 video_prompt；done 为 { video_prompt }
-   */
-  polishClassicVideoPromptStream(id, body, onDelta) {
-    return postStoryboardNdjsonStream(
-      `/api/v1/storyboards/${id}/classic-video-prompt-polish-stream`,
-      body,
-      onDelta,
-      (obj) => obj.video_prompt
-    ).then(({ finalText }) => ({ video_prompt: finalText }))
-  },
   insertBefore(id) {
     return request.post(`/storyboards/${id}/insert-before`, {})
   },
@@ -141,5 +123,21 @@ export const storyboardsAPI = {
   },
   upscale(id) {
     return request.post(`/storyboards/${id}/upscale`, {})
-  }
+  },
+  /** 尾帧衔接：提取当前分镜视频最后一帧，设为下一个分镜的首帧 */
+  linkTailFrame(id, data) {
+    return request.post(`/storyboards/${id}/link-tail-frame`, data || {})
+  },
+  /** 一键 AI 重新生成/优化本分镜的 layout_description（空间布局合同），自动参考上下分镜 */
+  regenerateLayoutDescription(id) {
+    return request.post(`/storyboards/${id}/regenerate-layout-description`, {})
+  },
+  /** 按后端最新规则重建单镜 video_prompt（含音色锚点，不调用 AI） */
+  rebuildVideoPrompt(id) {
+    return request.post(`/storyboards/${id}/rebuild-video-prompt`, {})
+  },
+  /** 按对白/旁白拆成多条分镜（每条仅一人说话或仅画外旁白） */
+  splitByAudio(id) {
+    return request.post(`/storyboards/${id}/split-by-audio`, {})
+  },
 }

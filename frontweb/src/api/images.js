@@ -9,5 +9,8 @@ export const imagesAPI = {
   },
   upload(data) {
     return request.post('/images/upload', data)
+  },
+  delete(id) {
+    return request.delete(`/images/${id}`)
   }
 }

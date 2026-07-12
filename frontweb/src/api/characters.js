@@ -35,17 +35,29 @@ export const characterAPI = {
   addToMaterialLibrary(characterId) {
     return request.post(`/characters/${characterId}/add-to-material-library`, {})
   },
-  /** 即梦素材库（Seedance 2.0）认证：角色图注册为 asset，供视频生成引用 asset:// */
-  sd2Certify(characterId) {
-    return request.post(`/characters/${characterId}/sd2-certify`, {})
-  },
-  sd2CertifyRefresh(characterId) {
-    return request.post(`/characters/${characterId}/sd2-certify/refresh`, {})
+  addToTeamLibrary(characterId, body = {}) {
+    return request.post(`/characters/${characterId}/add-to-team-library`, body)
   },
   extractFromImage(characterId) {
     return request.post(`/characters/${characterId}/extract-from-image`, {})
   },
   extractAnchors(characterId) {
     return request.post(`/characters/${characterId}/extract-anchors`, {})
+  },
+  sd2Certify(characterId) {
+    return request.post(`/characters/${characterId}/sd2-certify`, {})
+  },
+  sd2CertifyRefresh(characterId) {
+    return request.post(`/characters/${characterId}/sd2-certify/refresh`, {})
+  },
+  sd2VoiceUpload(characterId, file) {
+    const form = new FormData()
+    form.append('file', file)
+    return request.post(`/characters/${characterId}/sd2-voice-upload`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+  },
+  sd2VoiceRefresh(characterId) {
+    return request.post(`/characters/${characterId}/sd2-voice-refresh`, {})
   }
 }

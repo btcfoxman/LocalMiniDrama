@@ -15,14 +15,14 @@
   "scripts": {
     "prestart": "node scripts/copy-backend.js",
     "start": "electron .",
-    "rebuild:backend-native": "electron-rebuild -f --only better-sqlite3 --project-dir ../backend-node",
     "build:front": "cd ../frontweb && npm run build",
     "copy-front": "node scripts/copy-front.js",
-    "pack": "npm run prepare-backend && npm run build:front && npm run copy-front && electron-builder --dir",
-    "dist": "npm run prepare-backend && npm run build:front && npm run copy-front && electron-builder --win",
+    "clean:unpacked": "node scripts/clean-win-unpacked.js",
+    "pack": "npm run prepare-backend && npm run build:front && npm run copy-front && npm run clean:unpacked && electron-builder --dir",
+    "dist": "npm run prepare-backend && npm run build:front && npm run copy-front && npm run clean:unpacked && electron-builder --win",
     "dist:cn": "node scripts/dist-cn.js",
     "dist:mac": "bash dist-mac.sh",
-    "postinstall": "node scripts/copy-backend.js && electron-rebuild && electron-rebuild -f --only better-sqlite3 --project-dir ../backend-node",
+    "postinstall": "node scripts/copy-backend.js && electron-builder install-app-deps",
     "prepare-backend": "node scripts/copy-backend.js"
   },
   "dependencies": {
@@ -42,8 +42,7 @@
   },
   "devDependencies": {
     "electron": "^28.0.0",
-    "electron-builder": "^24.9.1",
-    "electron-rebuild": "^3.2.9"
+    "electron-builder": "^24.9.1"
   },
   "build": {
     "appId": "com.overseasdrama.desktop",

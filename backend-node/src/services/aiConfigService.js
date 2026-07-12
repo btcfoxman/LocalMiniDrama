@@ -1,6 +1,14 @@
 // AI 配置 CRUD，与 Go application/services/ai_service.go 对齐
 const fs = require('fs');
 const path = require('path');
+const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
+
+function normalizeApiKeyForService(serviceType, apiKey) {
+  if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
+    return normalizeMaterialHubToken(apiKey);
+  }
+  return apiKey;
+}
 const { applyDeepSeekConnectivityOptions } = require('./deepseekConfig');
 function modelToDb(model) {
   if (model == null) return null;
@@ -21,7 +29,7 @@ function modelFromDb(val) {
 
 /** 每种服务类型只保留一个默认：若有多个 is_default=1，只保留优先级最高（同优先级取 id 最小）的那条 */
 function ensureSingleDefaultPerType(db) {
-  const types = ['text', 'image', 'storyboard_image', 'video', 'tts', 'jimeng2_character_auth'];
+  const types = ['text', 'image', 'storyboard_image', 'video', 'tts', 'jimeng2_character_auth', 'model_ark_asset'];
   for (const st of types) {
     const rows = db.prepare(
       'SELECT id, priority FROM ai_service_configs WHERE deleted_at IS NULL AND service_type = ? AND is_default = 1 ORDER BY priority DESC, id ASC'
@@ -94,6 +102,13 @@ function createConfig(db, log, req) {
         endpoint = '/api/v1/nanobanana/generate-2';
         queryEndpoint = '/api/v1/nanobanana/record-info';
       }
+    } else if (p === 'agnes') {
+      if (st === 'text') endpoint = '/chat/completions';
+      else if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
+      else if (st === 'video') {
+        endpoint = '/videos';
+        queryEndpoint = '/videos/{taskId}';
+      }
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -106,7 +121,7 @@ function createConfig(db, log, req) {
     req.api_protocol || '',
     req.name || '',
     req.base_url || '',
-    req.api_key || '',
+    normalizeApiKeyForService(req.service_type, req.api_key || ''),
     model,
     defaultModel,
     endpoint,
@@ -146,7 +161,8 @@ function updateConfig(db, log, id, req) {
   }
   if (req.api_key != null) {
     updates.push('api_key = ?');
-    params.push(req.api_key);
+    const st = req.service_type != null ? req.service_type : existing.service_type;
+    params.push(normalizeApiKeyForService(st, req.api_key));
   }
   if (req.model != null) {
     updates.push('model = ?');
@@ -315,9 +331,9 @@ async function testConnection(opts) {
   const modelLower = model.toLowerCase();
 
   // 兜底识别图片/视频模型（service_type 未传时使用）
-  const looksLikeImageModel = /seedream|image2video|text2image|img2img|wanx|wan\d|flux|stable.?diff|dall.?e|imagen|-image$/i.test(modelLower)
+  const looksLikeImageModel = /seedream|image2video|text2image|img2img|wanx|wan\d|flux|stable.?diff|dall.?e|imagen|agnes-image|-image$/i.test(modelLower)
     || (isVolcengine && /seedream|vision|image/i.test(modelLower));
-  const looksLikeVideoModel = /seedance|video.?gen|video2video|kf2v|cogvideo|sora|kling/i.test(modelLower);
+  const looksLikeVideoModel = /seedance|happyhorse|video.?gen|video2video|kf2v|cogvideo|sora|kling|agnes-video/i.test(modelLower);
   // DashScope 图片/视频专用端点特征
   const isDashscopeNonChatEndpoint = isDashscope && !!(endpoint && (endpoint.includes('aigc') || endpoint.includes('multimodal') || endpoint.includes('video')));
 

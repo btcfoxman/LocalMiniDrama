@@ -22,6 +22,12 @@ const router = createRouter({
       meta: { title: 'AI 视频生成' }
     },
     {
+      path: '/film/:id/canvas',
+      name: 'film-canvas',
+      component: () => import('@/views/DramaCanvas.vue'),
+      meta: { title: '画布模式' }
+    },
+    {
       path: '/ai-config',
       name: 'ai-config',
       component: () => import('@/views/AiConfig.vue'),

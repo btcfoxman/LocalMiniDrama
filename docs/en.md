@@ -4,7 +4,7 @@
 
 **A locally-running AI short drama & comic generator — download and run, no cloud required, fully open source**
 
-[![version](https://img.shields.io/badge/version-1.2.11-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.20-blue?style=flat-square)](https://github.com/btcfoxman/LocalMiniDrama/releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](../LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -65,8 +65,10 @@ This project is built entirely in JavaScript from scratch. Connect your own AI A
 
 ### ✏️ Storyboard Fine Editing
 
-- **Classic vs Universal mode**: Toggle per storyboard. **Classic** shows the main reference image in the center; **Universal mode** uses a **segment prompt** field (`universal_segment_text`) for omni video APIs — pair with **`volcengine_omni`** (Volcengine Ark Seedance 2.0 multi-image) or **`kling_omni`** (Kling Omni). Classic fields remain; switch back anytime
-- **`@Image1` … slot references**: In the segment prompt, use **`@图片1` / `@图片2` …** to align with the reference order (scene → characters → props → main storyboard image, etc.); “Generate from storyboard” can fill camera/movement hints. If the segment prompt is non-empty, **only that text** is sent for video (structured video fields are not concatenated)
+- **Classic vs Universal mode**: Toggle per storyboard. **Classic** shows the main reference image in the center (video is blocked with a prompt if no reference image); **Universal mode** uses a **segment prompt** field (`universal_segment_text`) for omni video APIs — pair with **`volcengine_omni`** (Volcengine Ark Seedance 2.0 multi-image) or **`kling_omni`** (Kling Omni), with a pre-submit config check. Classic fields remain; switch back anytime
+- **`@Image1` … slot references**: In the segment prompt, use **`@图片1` / `@图片2` …** to align with the reference order (scene → characters → props; excludes the classic center panel image); “Generate from storyboard” can fill camera/movement hints. If the segment prompt is non-empty, **only that text** is sent for video (structured video fields are not concatenated)
+- **Tail-frame link** (v1.2.7): Extract the last frame from the current shot’s completed video and set it as the next shot’s first frame
+- **Export storyboard sheet** (v1.2.7): Export the current episode to an HTML table for review and collaboration
 - **Image Prompt**: View and edit the image-generation prompt for each shot; regenerate after changes
 - **Video Prompt**: Edit the full prompt text, or expand the composition panel to edit individual fields (scene / duration / action / mood / camera / shot type) — auto-reassembled on save
 - **Image Management**: AI generation, manual upload, drag-and-drop; replace at any time
@@ -76,7 +78,7 @@ This project is built entirely in JavaScript from scratch. Connect your own AI A
 - Three independent model slots: **image generation**, **video generation**, **text generation**
 - Compatible with **Alibaba DashScope**, **Volcengine (Doubao)**, **locally-deployed models** and any OpenAI-compatible API
 - Visual config panel; changes take effect immediately; **connection test** supported
-- Built-in quick-setup wizards for DashScope and Volcengine, with step-by-step API key instructions
+- Built-in quick-setup wizards for DashScope, Volcengine, and Agnes AI, with step-by-step API key instructions
 
 ### 🌓 UI / Theme
 
@@ -135,6 +137,7 @@ You can also double-click `run_dev.bat` at the project root to **start both serv
 |----------|:----:|:-----:|:-----:|
 | Alibaba DashScope (Qwen) | ✅ | ✅ | ✅ |
 | Volcengine / Doubao | ✅ | ✅ | ✅ |
+| Agnes AI | ✅ | ✅ | ✅ |
 | Local (Ollama, OpenAI-compat.) | ✅ | — | — |
 | Other OpenAI-compatible APIs | ✅ | ✅ | — |
 
@@ -182,7 +185,7 @@ LocalMiniDrama/
 
 Full version history → **[CHANGELOG](changelog.md)**
 
-**Latest v1.2.11 highlights:**
+**Fork v1.2.11 highlights:**
 - 🔧 **Packaged app defaults to local storage** — bundled storage config is now local/empty instead of prefilled 3.6 S3
 - 🔧 **Local references are sent as base64** — in local mode, model requests read local reference images and send them as base64 or multipart payloads instead of uploading to S3 or an image proxy
 
@@ -205,6 +208,23 @@ Full version history → **[CHANGELOG](changelog.md)**
 **v1.2.6 highlights:**
 - 🆕 **Seedance 2.0 (Volcengine Ark)** — multi-reference video via **`volcengine_omni`**; models such as `doubao-seedance-2-0-260128` (see console); duration for Seedance **2.x** clamped to **4–15s**; references sent as **`reference_image`**
 - 🆕 **Storyboard “Universal mode”** — center panel is a **segment prompt** stored as `universal_segment_text`; works with **`kling_omni`** or **`volcengine_omni`**; **`@图片N`** slots and “generate from storyboard” workflow
+
+**Upstream v1.2.8 highlights:**
+- 🆕 **Agnes AI** — one-click setup for text (`agnes-2.0-flash`), image (`agnes-image-2.1-flash`), and video (`agnes-video-v2.0`) with a single API key
+- 🆕 **Canvas mode enhancements** — script node on canvas, context menu, floating toolbar, in-canvas create/delete, batch episode generation
+- 🆕 **ModelArk private asset library** — configure BytePlus / Volcengine Ark asset groups for Seedance 2.0 character certification (AK/SK or Bearer auth)
+- 🔧 **Configurable image proxy** — `upload_url`, timeout (default 180s), and retry count in `config.yaml`; stale cache URLs auto-reupload
+- 🔧 **Prompt improvements** · **Storyboard image count limit fix**
+
+**v1.2.7 highlights:**
+- 🆕 **Tail-frame link** — one-click extract the last frame of the current shot’s video (server-side ffmpeg) and set it as the **next shot’s first frame**
+- 🆕 **Export storyboard sheet** — export the current episode’s shots to an **HTML table** (dialogue, narration, universal segment, prompts, etc.)
+- 🆕 **Unified generation task progress** — shared Pinia store for character/scene/prop/storyboard image & video async jobs, with recovery after page refresh
+- 🔧 **Video mode guards** — Universal mode checks **`kling_omni`** or **`volcengine_omni` + Seedance 2.x** before Omni multi-ref submit; Classic mode blocks video when no storyboard reference image
+- 🔧 **Separate first/last frame binding** — last frame no longer overwrites the main panel; Seedance 2.0 certified assets marked stale when the character main image changes
+
+**v1.2.6 / v1.2.5 highlights:**
+- 🆕 **Seedance 2.0 + Universal storyboard mode** — `volcengine_omni` / `kling_omni`, multi-ref **`@图片N`**, `universal_segment_text` (see [CHANGELOG](../CHANGELOG.md))
 
 **v1.2.3 highlights:**
 - 🆕 **Storyboard narrator (narration)** — optional per-shot voice-over text separate from character `dialogue`, for TTS and editing
@@ -249,6 +269,27 @@ All contributions are welcome!
 - 💡 **Suggest a feature** → [New Issue](../../issues/new)
 - 🔧 **Submit code** → Fork → Edit → Pull Request
 - ⭐ **Star the project** → Help others discover it
+
+---
+
+## ☕ Buy the Author a Coffee
+
+LocalMiniDrama is **free, open source, and runs locally** — maintained in spare time. If it saved you hours or helped ship a short drama, optional tips are warmly appreciated (any amount; totally voluntary).
+
+> Tips do **not** affect features, issues, or PRs. A ⭐ Star or sharing the repo helps just as much.
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="../项目截图/weixinpay.jpg" alt="WeChat Pay tip QR" width="200"/><br/>
+      <sub><b>WeChat Pay</b></sub>
+    </td>
+    <td align="center">
+      <img src="../项目截图/ali.jpg" alt="Alipay tip QR" width="200"/><br/>
+      <sub><b>Alipay</b></sub>
+    </td>
+  </tr>
+</table>
 
 ---
 

@@ -318,6 +318,70 @@ function routes(db, log) {
         response.internalError(res, err.message);
       }
     },
+    framePromptSave: (req, res) => {
+      try {
+        const frameType = req.params.frame_type;
+        const validTypes = ['first', 'key', 'last', 'panel', 'action'];
+        if (!validTypes.includes(frameType)) {
+          return response.badRequest(res, '不支持的 frame_type');
+        }
+        const body = req.body || {};
+        const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+        const description = typeof body.description === 'string' ? body.description : null;
+        const layout = typeof body.layout === 'string' ? body.layout : null;
+        if (!prompt.trim()) {
+          return response.badRequest(res, 'prompt 不能为空');
+        }
+        framePromptService.saveFramePrompt(db, log, req.params.id, frameType, prompt, description, layout);
+        response.success(res, { message: '保存成功', frame_type: frameType });
+      } catch (err) {
+        log.error('storyboards frame-prompt-save', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    regenerateLayoutDescription: async (req, res) => {
+      try {
+        const id = Number(req.params.id);
+        if (!id) return response.badRequest(res, '缺少分镜 id');
+        const newLayout = await framePromptService.regenerateLayoutDescription(db, log, id);
+        response.success(res, {
+          layout_description: newLayout,
+          message: '布局描述已由 AI 重新生成并保存',
+        });
+      } catch (err) {
+        log.error('storyboards regenerateLayoutDescription', { error: err.message, id: req.params.id });
+        response.internalError(res, err.message || '重新生成布局描述失败');
+      }
+    },
+    rebuildVideoPrompt: (req, res) => {
+      try {
+        const id = Number(req.params.id);
+        if (!id) return response.badRequest(res, '缺少分镜 id');
+        const sb = episodeStoryboardService.rebuildVideoPromptForStoryboard(db, log, id);
+        if (!sb) return response.notFound(res, '分镜不存在');
+        response.success(res, {
+          ...sb,
+          message: '视频提示词已按最新规则重建并保存',
+        });
+      } catch (err) {
+        log.error('storyboards rebuildVideoPrompt', { error: err.message, id: req.params.id });
+        response.internalError(res, err.message || '重建视频提示词失败');
+      }
+    },
+    splitByAudio: (req, res) => {
+      try {
+        const id = Number(req.params.id);
+        if (!id) return response.badRequest(res, '缺少分镜 id');
+        const result = episodeStoryboardService.splitStoryboardByAudio(db, log, id);
+        response.success(res, {
+          ...result,
+          message: `已拆成 ${result.storyboard_ids.length} 条分镜（新增 ${result.created_count} 条）`,
+        });
+      } catch (err) {
+        log.error('storyboards splitByAudio', { error: err.message, id: req.params.id });
+        response.badRequest(res, err.message || '拆镜失败');
+      }
+    },
     episodeStoryboardsGenerate: (req, res) => {
       try {
         const taskId = episodeStoryboardService.generateStoryboard(

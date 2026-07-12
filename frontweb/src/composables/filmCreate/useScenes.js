@@ -1,9 +1,10 @@
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { sceneAPI } from '@/api/scenes'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { uploadAPI } from '@/api/upload'
-import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership, markAssetInLibrary } from './libraryMembership'
+import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
+import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 
 /**
  * 场景管理 Composable
@@ -17,11 +18,26 @@ import { createLibraryMembershipState, hasAssetInLibrary, loadLibraryMembership,
  * @param {Function} deps.pollTask
  * @param {Function} deps.pollUntilResourceHasImage
  * @param {Function} deps.hasAssetImage
- * @param {Function} [deps.getAssetImageModel]
  * @param {object} deps.dramaAPI
  */
 export function useScenes(deps) {
-  const { store, dramaId, currentEpisodeId, getSelectedStyle, getAssetImageModel, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI } = deps
+  const { store, dramaId, currentEpisodeId, getSelectedStyle, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI } = deps
+  const genStore = useGenerationTaskStore()
+
+  function buildSceneImageMeta(scene) {
+    const dramaTitle = store.drama?.title || ''
+    const epNum = store.currentEpisode?.episode_number
+    const epLabel = dramaTitle ? `${dramaTitle} · 第${epNum ?? ''}集` : `第${epNum ?? ''}集`
+    return {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle,
+      episodeNumber: epNum,
+      resourceType: GEN_RESOURCE.SCENE_IMAGE,
+      resourceId: scene.id,
+      label: `${epLabel} 场景图: ${scene.location || scene.id}`,
+    }
+  }
 
   function dataUrlToFile(dataUrl, filename) {
     const arr = dataUrl.split(',')
@@ -64,7 +80,9 @@ export function useScenes(deps) {
   let editScenePollTimer = null
 
   // ── 场景生成状态 ──────────────────────────────────────
-  const scenesExtracting = ref(false)
+  const scenesExtracting = computed(() =>
+    isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.EXTRACT_SCENES)
+  )
   const generatingSceneIds = reactive(new Set())
 
   // ── 场景库状态 ────────────────────────────────────────
@@ -81,22 +99,33 @@ export function useScenes(deps) {
   const addingSceneToLibraryId = ref(null)
   const addingSceneToMaterialId = ref(null)
   const addingSceneFromLibraryId = ref(null)
-  const sceneMembership = createLibraryMembershipState()
   let sceneLibraryKeywordTimer = null
+
+  const sceneLibraryTab = ref('library')
+  const dramaAllSceneList = ref([])
+  const dramaAllSceneLoading = ref(false)
+  const dramaAllScenePage = ref(1)
+  const dramaAllScenePageSize = ref(20)
+  const dramaAllSceneTotal = ref(0)
+  const dramaAllSceneKeyword = ref('')
+  let dramaAllSceneKeywordTimer = null
+
 
   // ── 函数 ──────────────────────────────────────────────
   async function onExtractScenes() {
     if (!currentEpisodeId.value) return
-    scenesExtracting.value = true
+    const epId = currentEpisodeId.value
+    const meta = buildExtractTaskMeta(store, dramaId.value, epId, GEN_RESOURCE.EXTRACT_SCENES, '提取场景')
+    genStore.markRunning(meta)
     try {
-      const res = await dramaAPI.extractBackgrounds(currentEpisodeId.value, {
+      const res = await dramaAPI.extractBackgrounds(epId, {
         model: undefined,
         style: getSelectedStyle(),
         language: scriptLanguage.value
       })
       const taskId = res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama())
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
         if (pollRes?.status !== 'failed') {
           ElMessage.success('场景提取完成')
         }
@@ -107,7 +136,7 @@ export function useScenes(deps) {
     } catch (e) {
       ElMessage.error(e.message || '提取失败')
     } finally {
-      scenesExtracting.value = false
+      genStore.markDone(meta)
     }
   }
 
@@ -129,6 +158,7 @@ export function useScenes(deps) {
       time: scene.time || '',
       prompt: scene.prompt || '',
       polished_prompt: scene.polished_prompt || '',
+      polished_prompt_single: scene.polished_prompt_single || '',
       image_url: scene.image_url || '',
       local_path: scene.local_path || '',
       ref_image: scene.ref_image || '',
@@ -168,6 +198,24 @@ export function useScenes(deps) {
       if (res?.polished_prompt) {
         form.polished_prompt = res.polished_prompt
         ElMessage.success('提示词已生成')
+        await loadDrama()
+      }
+    } catch (e) {
+      ElMessage.error(e.message || '生成提示词失败')
+    } finally {
+      editScenePromptGenerating.value = false
+    }
+  }
+
+  async function doGenerateSceneSinglePrompt() {
+    const form = editSceneForm.value
+    if (!form?.id) return
+    editScenePromptGenerating.value = true
+    try {
+      const res = await sceneAPI.generatePrompt(form.id, undefined, undefined, 'single')
+      if (res?.polished_prompt_single) {
+        form.polished_prompt_single = res.polished_prompt_single
+        ElMessage.success('单图提示词已生成')
         await loadDrama()
       }
     } catch (e) {
@@ -231,7 +279,8 @@ export function useScenes(deps) {
           time: form.time || undefined,
           prompt: form.prompt || undefined,
           polished_prompt: form.polished_prompt || undefined,
-          negative_prompt: (form.negative_prompt || '').trim() || null,
+          polished_prompt_single: form.polished_prompt_single || undefined,
+          negative_prompt: (form.negative_prompt || '').trim() || null
         })
         await saveSceneRefImageIfAny(form.id)
         ElMessage.success('场景已保存')
@@ -286,19 +335,22 @@ export function useScenes(deps) {
     }
   }
 
-  async function onGenerateSceneImage(scene) {
+  async function onGenerateSceneImage(scene, useQuadGrid = false) {
     scene.errorMsg = ''
     scene.error_msg = ''
+    const meta = buildSceneImageMeta(scene)
     generatingSceneIds.add(scene.id)
+    genStore.markRunning(meta)
     try {
       const res = await sceneAPI.generateImage({
         scene_id: scene.id,
-        model: getAssetImageModel?.(),
-        style: getSelectedStyle()
+        model: undefined,
+        style: getSelectedStyle(),
+        use_quad_grid: !!useQuadGrid
       })
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
-        const pollRes = await pollTask(taskId, () => loadDrama())
+        const pollRes = await pollTask(taskId, () => loadDrama(), meta)
         if (pollRes?.status === 'failed') {
           scene.errorMsg = pollRes.error || '生成失败'
         } else {
@@ -319,6 +371,7 @@ export function useScenes(deps) {
       ElMessage.error(e.message || '提交失败')
     } finally {
       generatingSceneIds.delete(scene.id)
+      genStore.markDone(meta)
     }
   }
 
@@ -350,6 +403,68 @@ export function useScenes(deps) {
       sceneLibraryPage.value = 1
       loadSceneLibraryList()
     }, 300)
+  }
+
+  async function loadDramaAllSceneList() {
+    if (!dramaId.value) {
+      dramaAllSceneList.value = []
+      dramaAllSceneTotal.value = 0
+      return
+    }
+    dramaAllSceneLoading.value = true
+    try {
+      const res = await sceneAPI.list(dramaId.value)
+      let list = Array.isArray(res) ? res : (res?.items ?? res?.scenes ?? [])
+      const kw = (dramaAllSceneKeyword.value || '').trim().toLowerCase()
+      if (kw) {
+        list = list.filter((s) => {
+          const loc = (s.location || '').toLowerCase()
+          const time = (s.time || '').toLowerCase()
+          const desc = (s.description || '').toLowerCase()
+          const prompt = (s.prompt || '').toLowerCase()
+          return loc.includes(kw) || time.includes(kw) || desc.includes(kw) || prompt.includes(kw)
+        })
+      }
+      dramaAllSceneTotal.value = list.length
+      const start = (dramaAllScenePage.value - 1) * dramaAllScenePageSize.value
+      dramaAllSceneList.value = list.slice(start, start + dramaAllScenePageSize.value)
+    } catch {
+      dramaAllSceneList.value = []
+      dramaAllSceneTotal.value = 0
+    } finally {
+      dramaAllSceneLoading.value = false
+    }
+  }
+
+  function debouncedLoadDramaAllSceneList() {
+    if (dramaAllSceneKeywordTimer) clearTimeout(dramaAllSceneKeywordTimer)
+    dramaAllSceneKeywordTimer = setTimeout(() => {
+      dramaAllScenePage.value = 1
+      loadDramaAllSceneList()
+    }, 300)
+  }
+
+  function onSceneLibraryDialogOpen() {
+    if (sceneLibraryTab.value === 'library') loadSceneLibraryList()
+    else if (sceneLibraryTab.value === 'drama') loadDramaAllSceneList()
+  }
+
+  function onSceneLibraryTabChange() {
+    if (sceneLibraryTab.value === 'library') {
+      sceneLibraryPage.value = 1
+      loadSceneLibraryList()
+    } else if (sceneLibraryTab.value === 'drama') {
+      dramaAllScenePage.value = 1
+      loadDramaAllSceneList()
+    }
+  }
+
+  function sceneAddToEpisodeLoadingKey(scope, id) {
+    return `${scope}-${id}`
+  }
+
+  function isSceneAddToEpisodeLoading(scope, id) {
+    return addingSceneFromLibraryId.value === sceneAddToEpisodeLoadingKey(scope, id)
   }
 
   function openEditSceneLibrary(item) {
@@ -407,7 +522,6 @@ export function useScenes(deps) {
     addingSceneToLibraryId.value = scene.id
     try {
       await sceneAPI.addToLibrary(scene.id, {})
-      markAssetInLibrary(sceneMembership.dramaSourceIds, scene)
       ElMessage.success('已加入本剧场景库')
       if (showSceneLibrary.value) loadSceneLibraryList()
     } catch (e) {
@@ -422,7 +536,6 @@ export function useScenes(deps) {
     addingSceneToMaterialId.value = scene.id
     try {
       await sceneAPI.addToMaterialLibrary(scene.id)
-      markAssetInLibrary(sceneMembership.materialSourceIds, scene)
       ElMessage.success('已加入全局素材库')
     } catch (e) {
       ElMessage.error(e.message || '加入失败')
@@ -431,30 +544,15 @@ export function useScenes(deps) {
     }
   }
 
-  async function loadSceneLibraryMembership() {
-    await loadLibraryMembership({
-      api: sceneLibraryAPI,
-      sourceType: 'scene',
-      assets: store.scenes || [],
-      dramaId: dramaId.value,
-      dramaSourceIds: sceneMembership.dramaSourceIds,
-      materialSourceIds: sceneMembership.materialSourceIds,
-    })
-  }
-
-  function isSceneInLibrary(scene) {
-    return hasAssetInLibrary(sceneMembership.dramaSourceIds, scene)
-  }
-
-  function isSceneInMaterialLibrary(scene) {
-    return hasAssetInLibrary(sceneMembership.materialSourceIds, scene)
-  }
-
-  async function onAddSceneFromLibrary(item) {
-    if (!store.dramaId || !currentEpisodeId.value) return
-    addingSceneFromLibraryId.value = item.id
+  async function addSceneToEpisode(item, scope) {
+    if (!store.dramaId || !currentEpisodeId.value) {
+      ElMessage.warning('请先选择本集')
+      return
+    }
+    const loadingKey = sceneAddToEpisodeLoadingKey(scope, item.id)
+    addingSceneFromLibraryId.value = loadingKey
     try {
-      const existingScene = (store.scenes || []).find(s => s.location === item.location)
+      const existingScene = (store.scenes || []).find((s) => s.location === item.location)
       if (existingScene) {
         await sceneAPI.update(existingScene.id, {
           location: item.location || existingScene.location,
@@ -484,6 +582,18 @@ export function useScenes(deps) {
     }
   }
 
+  function onAddSceneFromLibrary(item) {
+    return addSceneToEpisode(item, 'library')
+  }
+
+  function onAddDramaSceneToEpisode(item) {
+    return addSceneToEpisode(item, 'drama')
+  }
+
+  function onAddTeamSceneToEpisode(item) {
+    return addSceneToEpisode(item, 'team')
+  }
+
   return {
     // 弹窗状态
     showEditScene,
@@ -504,11 +614,25 @@ export function useScenes(deps) {
     sceneLibraryPageSize,
     sceneLibraryTotal,
     sceneLibraryKeyword,
+    sceneLibraryTab,
+    dramaAllSceneList,
+    dramaAllSceneLoading,
+    dramaAllScenePage,
+    dramaAllScenePageSize,
+    dramaAllSceneTotal,
+    dramaAllSceneKeyword,
+
+
+
+
+
+
     showEditSceneLibrary,
     editSceneLibraryForm,
     editSceneLibrarySaving,
     addingSceneToLibraryId,
     addingSceneToMaterialId,
+
     addingSceneFromLibraryId,
     // 函数
     onExtractScenes,
@@ -516,6 +640,7 @@ export function useScenes(deps) {
     stopScenePromptPoll,
     editScene,
     doGenerateScenePrompt,
+    doGenerateSceneSinglePrompt,
     saveSceneRefImageIfAny,
     clearSceneRefImage,
     doExtractSceneFromImage,
@@ -523,16 +648,25 @@ export function useScenes(deps) {
     onCloseSceneDialog,
     onDeleteScene,
     onGenerateSceneImage,
-    loadSceneLibraryMembership,
-    isSceneInLibrary,
-    isSceneInMaterialLibrary,
     loadSceneLibraryList,
     debouncedLoadSceneLibrary,
+    loadDramaAllSceneList,
+    debouncedLoadDramaAllSceneList,
+
+
+    onSceneLibraryDialogOpen,
+    onSceneLibraryTabChange,
+    isSceneAddToEpisodeLoading,
     openEditSceneLibrary,
     submitEditSceneLibrary,
     onDeleteSceneLibrary,
     onAddSceneToLibrary,
     onAddSceneToMaterialLibrary,
+
+
+
     onAddSceneFromLibrary,
+    onAddDramaSceneToEpisode,
+
   }
 }

@@ -41,6 +41,8 @@ function normalizeImageProxySettings(input = {}, current = {}) {
     token: trimValue(get('token', DEFAULT_IMAGE_PROXY_TOKEN)) || DEFAULT_IMAGE_PROXY_TOKEN,
     expire_hours: numberValue(get('expire_hours', 23), 23),
     use_for_gemini: boolValue(get('use_for_gemini', true), true),
+    upload_timeout_seconds: numberValue(get('upload_timeout_seconds', 45), 45),
+    upload_max_attempts: Math.max(1, Math.min(5, numberValue(get('upload_max_attempts', 2), 2))),
   };
 }
 
@@ -264,7 +266,7 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
  * 将图片 Buffer 上传到中转图床，返回公开访问 URL。
  * 接口：POST https://imageproxy.zhongzhuan.chat/api/upload  (multipart/form-data, field: file)
  * 响应：{ url: "https://imageproxy.zhongzhuan.chat/api/proxy/image/<hash>", created: ... }
- * 失败自动重试，最多 3 次；成功返回 string URL，全部失败返回 null。
+ * 失败自动重试；成功返回 string URL，全部失败返回 null。
  */
 async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride = null) {
   const proxy = loadImageProxyConfig(proxyOverride);
@@ -280,12 +282,20 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride
     log?.warn?.('[图床上传] 未配置 token，跳过中转上传', { tag, upload_url: proxy.upload_url });
     return null;
   }
+  const timeoutMs = Math.max(5000, Number(proxy.upload_timeout_seconds) * 1000);
+  const maxAttempts = Math.max(1, Math.min(5, Number(proxy.upload_max_attempts)));
   const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
   const ext = extMap[mimeType] || 'jpg';
   const filename = `ref_${Date.now()}.${ext}`;
-  const MAX_ATTEMPTS = 3;
-  log.info('[图床上传] ▶ 开始', { tag, filename, size_kb: Math.round(imageBuffer.length / 1024) });
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  log.info('[图床上传] ▶ 开始', {
+    tag,
+    filename,
+    size_kb: Math.round(imageBuffer.length / 1024),
+    upload_url: proxy.upload_url,
+    timeout_sec: Math.round(timeoutMs / 1000),
+    max_attempts: maxAttempts,
+  });
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const t0 = Date.now();
     try {
       const boundary = 'imgproxy_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -299,23 +309,27 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride
           Authorization: `Bearer ${proxy.token}`,
         },
         body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const raw = await res.text();
       const ms = Date.now() - t0;
       if (!res.ok) {
         log.warn('[图床上传] 失败', { tag, attempt, status: res.status, ms, body: raw.slice(0, 200) });
-        if (attempt < MAX_ATTEMPTS) continue;
+        if (attempt < maxAttempts) continue;
         return null;
       }
       const data = JSON.parse(raw);
       const url = data?.url || null;
       if (url) { log.info('[图床上传] ✓ 成功', { tag, attempt, url, ms }); return url; }
       log.warn('[图床上传] 响应无 url 字段', { tag, attempt, ms, raw: raw.slice(0, 200) });
-      if (attempt < MAX_ATTEMPTS) continue;
+      if (attempt < maxAttempts) continue;
       return null;
     } catch (err) {
-      log.warn('[图床上传] 请求异常', { tag, attempt, ms: Date.now() - t0, err: err.message });
-      if (attempt < MAX_ATTEMPTS) continue;
+      const errMsg = err.name === 'TimeoutError' || err.name === 'AbortError'
+        ? `请求超时（${Math.round(timeoutMs / 1000)}s）`
+        : err.message;
+      log.warn('[图床上传] 请求异常', { tag, attempt, ms: Date.now() - t0, err: errMsg });
+      if (attempt < maxAttempts) continue;
       return null;
     }
   }

@@ -4,8 +4,11 @@ export const sceneAPI = {
   get(sceneId) {
     return request.get(`/scenes/${sceneId}`)
   },
-  generatePrompt(sceneId, model, style) {
-    return request.post(`/scenes/${sceneId}/generate-prompt`, { model, style })
+  list(dramaId) {
+    return request.get(`/dramas/${dramaId}/scenes`)
+  },
+  generatePrompt(sceneId, model, style, mode) {
+    return request.post(`/scenes/${sceneId}/generate-prompt`, { model, style, mode })
   },
   create(data) {
     return request.post('/scenes', data)
@@ -24,6 +27,9 @@ export const sceneAPI = {
   },
   addToMaterialLibrary(sceneId) {
     return request.post(`/scenes/${sceneId}/add-to-material-library`, {})
+  },
+  addToTeamLibrary(sceneId, body = {}) {
+    return request.post(`/scenes/${sceneId}/add-to-team-library`, body)
   },
   extractFromImage(sceneId) {
     return request.post(`/scenes/${sceneId}/extract-from-image`, {})

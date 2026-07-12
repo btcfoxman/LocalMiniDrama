@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const response = require('../response');
 const characterLibraryService = require('../services/characterLibraryService');
@@ -9,7 +10,7 @@ function routes(db, cfg, log, uploadService) {
     getOne: (req, res) => {
       try {
         const row = db.prepare(
-          'SELECT id, drama_id, name, role, appearance, description, personality, voice_style, image_url, local_path, polished_prompt, four_view_image_url, identity_anchors, seedance2_asset, negative_prompt, updated_at FROM characters WHERE id = ? AND deleted_at IS NULL'
+          'SELECT id, drama_id, name, role, appearance, description, personality, voice_style, image_url, local_path, polished_prompt, four_view_image_url, identity_anchors, seedance2_asset, seedance2_voice_asset, negative_prompt, updated_at FROM characters WHERE id = ? AND deleted_at IS NULL'
         ).get(Number(req.params.id));
         if (!row) return response.notFound(res, '角色不存在');
         if (row.seedance2_asset) {
@@ -20,6 +21,15 @@ function routes(db, cfg, log, uploadService) {
           }
         } else {
           row.seedance2_asset = null;
+        }
+        if (row.seedance2_voice_asset) {
+          try {
+            row.seedance2_voice_asset = JSON.parse(row.seedance2_voice_asset);
+          } catch (_) {
+            row.seedance2_voice_asset = null;
+          }
+        } else {
+          row.seedance2_voice_asset = null;
         }
         response.success(res, { character: row });
       } catch (err) {
@@ -309,6 +319,83 @@ function routes(db, cfg, log, uploadService) {
         response.success(res, { message: '认证状态已刷新', seedance2_asset: out.seedance2_asset });
       } catch (err) {
         log.error('characters sd2-certify-refresh', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    /** Seedance 2.0 角色音色参考音频上传 */
+    sd2VoiceUpload: async (req, res) => {
+      try {
+        const charId = Number(req.params.id);
+        const charRow = db
+          .prepare('SELECT id, drama_id FROM characters WHERE id = ? AND deleted_at IS NULL')
+          .get(charId);
+        if (!charRow) return response.notFound(res, '角色不存在');
+
+        if (!req.file) return response.badRequest(res, '请上传音频文件');
+
+        const allowedExt = ['.mp3', '.wav', '.m4a', '.ogg'];
+        const ext = path.extname(req.file.originalname || '').toLowerCase();
+        if (!allowedExt.includes(ext)) {
+          return response.badRequest(res, '仅支持 mp3/wav/m4a/ogg 格式');
+        }
+
+        const storageLocalPath = cfg?.storage?.local_path;
+        const storageRoot = storageLocalPath
+          ? path.isAbsolute(storageLocalPath)
+            ? storageLocalPath
+            : path.join(process.cwd(), storageLocalPath)
+          : path.join(process.cwd(), 'data', 'storage');
+
+        const relDir = `drama_${charRow.drama_id}/characters/voice`;
+        const absDir = path.join(storageRoot, relDir);
+        if (!fs.existsSync(absDir)) fs.mkdirSync(absDir, { recursive: true });
+
+        const safeName = `char_${charId}_voice_${Date.now()}${ext}`;
+        const absPath = path.join(absDir, safeName);
+        fs.writeFileSync(absPath, req.file.buffer);
+
+        const publicUrl = `/static/${relDir}/${safeName}`;
+        const now = new Date().toISOString();
+
+        const payload = {
+          status: 'active',
+          url: publicUrl,
+          local_path: `${relDir}/${safeName}`,
+          certified_at: now,
+          duration: null,
+          format: ext.replace('.', ''),
+        };
+
+        db.prepare('UPDATE characters SET seedance2_voice_asset = ?, updated_at = ? WHERE id = ?').run(
+          JSON.stringify(payload),
+          now,
+          charId
+        );
+
+        response.success(res, { message: 'Seedance 2.0 音色参考已保存', seedance2_voice_asset: payload });
+      } catch (err) {
+        log.error('characters sd2-voice-upload', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    sd2VoiceRefresh: async (req, res) => {
+      try {
+        const charId = Number(req.params.id);
+        const row = db
+          .prepare('SELECT seedance2_voice_asset FROM characters WHERE id = ? AND deleted_at IS NULL')
+          .get(charId);
+        if (!row) return response.notFound(res, '角色不存在');
+        let asset = null;
+        if (row.seedance2_voice_asset) {
+          try {
+            asset = JSON.parse(row.seedance2_voice_asset);
+          } catch (_) {
+            asset = null;
+          }
+        }
+        response.success(res, { message: '状态已刷新', seedance2_voice_asset: asset });
+      } catch (err) {
+        log.error('characters sd2-voice-refresh', { error: err.message });
         response.internalError(res, err.message);
       }
     },

@@ -125,6 +125,20 @@ function saveProgress(db, log) {
   };
 }
 
+function saveCanvasLayout(db, log) {
+  return (req, res) => {
+    try {
+      const updated = dramaService.saveCanvasLayout(db, log, req.params.id, req.body || {});
+      if (!updated) return response.notFound(res, '剧本不存在');
+      response.success(res, updated);
+    } catch (err) {
+      if (err.code === 'BAD_REQUEST') return response.badRequest(res, err.message);
+      log.error('Save canvas layout failed', { error: err.message });
+      response.internalError(res, err.message || '保存画布布局失败');
+    }
+  };
+}
+
 function listProps(db) {
   return (req, res) => {
     const props = propService.listByDramaId(db, req.params.id);
@@ -278,6 +292,7 @@ module.exports = function dramaRoutes(db, cfg, log) {
     saveCharacters: saveCharacters(db, log),
     saveEpisodes: saveEpisodes(db, log),
     saveProgress: saveProgress(db, log),
+    saveCanvasLayout: saveCanvasLayout(db, log),
     listProps: listProps(db),
     finalizeEpisode: finalizeEpisode(db, log, cfg),
     downloadEpisodeVideo: downloadEpisodeVideo(db),

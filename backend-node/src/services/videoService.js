@@ -286,10 +286,186 @@ async function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, vid
   await normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
 }
 
+/** 防止同一 videoGenId 重复发起 poll（含重启恢复） */
+const activeVideoPolls = new Set();
+
+function resolveStoragePath(cfg) {
+  return path.isAbsolute(cfg.storage?.local_path)
+    ? cfg.storage.local_path
+    : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+}
+
+async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel) {
+  const now = new Date().toISOString();
+  let localPath = null;
+  let finalVideoUrl = videoUrl;
+  try {
+    const cfg = require('../config').loadConfig();
+    const storagePath = resolveStoragePath(cfg);
+    const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
+    localPath = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
+    await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+    if (localPath) {
+      finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
+        || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
+        || videoUrl;
+    }
+  } catch (_) {}
+  try {
+    db.prepare(
+      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    ).run('completed', finalVideoUrl, localPath, now, now, videoGenId);
+  } catch (e) {
+    if ((e.message || '').includes('completed_at')) {
+      db.prepare(
+        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
+      ).run('completed', finalVideoUrl, localPath, now, videoGenId);
+    } else throw e;
+  }
+  if (row.storyboard_id) {
+    try {
+      db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
+        finalVideoUrl, localPath, now, row.storyboard_id
+      );
+      log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
+        storyboard_id: row.storyboard_id,
+        video_url: finalVideoUrl,
+      });
+    } catch (_) {}
+  }
+  if (row.task_id) {
+    taskService.updateTaskResult(db, row.task_id, {
+      video_generation_id: videoGenId,
+      video_url: finalVideoUrl,
+      status: 'completed',
+    });
+  }
+  log.info('Video generation completed' + (logLabel ? ` (${logLabel})` : ''), {
+    id: videoGenId,
+    video_url: finalVideoUrl,
+    local_path: localPath,
+  });
+}
+
+async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config) {
+  const cfg = require('../config').loadConfig();
+  const POLL_INTERVAL_MS = 10000;
+  const { resolveVideoGenerationTimeoutMinutes } = require('../config/videoGeneration');
+  const generationTimeoutMinutes = resolveVideoGenerationTimeoutMinutes(cfg);
+  const pollMaxAttempts = Math.max(
+    1,
+    Math.ceil((generationTimeoutMinutes * 60 * 1000) / POLL_INTERVAL_MS)
+  );
+  const pollResult = await videoClient.pollVideoTask(
+    db,
+    log,
+    videoGenId,
+    providerTaskId,
+    config,
+    pollMaxAttempts,
+    POLL_INTERVAL_MS
+  );
+  const now = new Date().toISOString();
+  const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
+  if (polledVideo.ok) {
+    await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, polledVideo.video_url, 'after poll');
+  } else {
+    setVideoGenFailed(db, videoGenId, polledVideo.error, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
+    log.error('Video generation failed (after poll)', { id: videoGenId, error: polledVideo.error });
+  }
+}
+
+/**
+ * 服务重启后恢复对厂商异步任务的轮询（需已持久化 provider_task_id）
+ */
+async function resumePollForVideoGeneration(db, log, videoGenId) {
+  if (activeVideoPolls.has(videoGenId)) {
+    log.info('Video poll already active, skip resume', { videoGenId });
+    return;
+  }
+  const row = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(videoGenId));
+  if (!row || row.status !== 'processing') return;
+  const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
+  if (!providerTaskId) return;
+
+  const config = videoClient.getDefaultVideoConfig(db, row.model);
+  if (!config) {
+    const now = new Date().toISOString();
+    setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
+    return;
+  }
+
+  activeVideoPolls.add(videoGenId);
+  log.info('Resuming video generation poll after restart', {
+    videoGenId,
+    provider_task_id: providerTaskId,
+  });
+  try {
+    let aspectForVideo = row.aspect_ratio;
+    if (aspectForVideo) {
+      const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);
+      if (n) aspectForVideo = n;
+    }
+    const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
+    await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config);
+  } catch (err) {
+    const now = new Date().toISOString();
+    setVideoGenFailed(db, videoGenId, err.message, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
+    log.error('Video generation resume poll error', { id: videoGenId, error: err.message });
+  } finally {
+    activeVideoPolls.delete(videoGenId);
+  }
+}
+
+/** 启动时恢复 processing 视频任务；无 provider_task_id 的视为中断 */
+function resumeProcessingVideoGenerations(db, log) {
+  const stuck = db
+    .prepare(
+      `SELECT id, task_id FROM video_generations
+       WHERE status = 'processing' AND deleted_at IS NULL
+         AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')`
+    )
+    .all();
+  const stuckMsg = '服务重启后无法恢复轮询（缺少厂商任务 ID），请重新生成';
+  for (const s of stuck) {
+    const now = new Date().toISOString();
+    setVideoGenFailed(db, s.id, stuckMsg, now);
+    if (s.task_id) taskService.updateTaskError(db, s.task_id, stuckMsg);
+    log.warn('Marked interrupted video generation as failed', { videoGenId: s.id });
+  }
+
+  const resumable = db
+    .prepare(
+      `SELECT id FROM video_generations
+       WHERE status = 'processing' AND deleted_at IS NULL
+         AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''`
+    )
+    .all();
+  if (resumable.length) {
+    log.info('Resuming video generation polls', { count: resumable.length });
+  }
+  for (const r of resumable) {
+    setImmediate(() => {
+      resumePollForVideoGeneration(db, log, r.id).catch((e) => {
+        log.error('resumePollForVideoGeneration unhandled', { videoGenId: r.id, error: e.message });
+      });
+    });
+  }
+}
+
 async function processVideoGeneration(db, log, videoGenId) {
+  if (activeVideoPolls.has(videoGenId)) {
+    log.info('Video generation already in progress, skip duplicate', { videoGenId });
+    return;
+  }
+  activeVideoPolls.add(videoGenId);
   log.info('processVideoGeneration started', { videoGenId });
   const row = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(videoGenId));
   if (!row) {
+    activeVideoPolls.delete(videoGenId);
     log.error('Video generation not found', { id: videoGenId });
     return;
   }
@@ -343,6 +519,16 @@ async function processVideoGeneration(db, log, videoGenId) {
       } catch (_) {}
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
+    const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
+    if (row.task_id && hasOmniRefs) {
+      taskService.updateTaskStatus(
+        db,
+        row.task_id,
+        'processing',
+        5,
+        `正在上传 ${reference_urls.length} 张参考图到图床…`
+      );
+    }
     const result = await videoClient.callVideoApi(db, log, {
       prompt: row.prompt,
       model: row.model,
@@ -355,9 +541,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       provider: row.provider,
       drama_id: row.drama_id,
       storyboard_id: row.storyboard_id || undefined,
-      image_url: row.image_url,
-      first_frame_url: row.first_frame_url,
-      last_frame_url: row.last_frame_url,
+      image_url: hasOmniRefs ? undefined : row.image_url,
+      first_frame_url: hasOmniRefs ? undefined : row.first_frame_url,
+      last_frame_url: hasOmniRefs ? undefined : row.last_frame_url,
       reference_urls,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
@@ -372,45 +558,7 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
     if (directVideo.ok) {
-      let localPath = null;
-      let finalVideoUrl = directVideo.video_url;
-      try {
-        const loadConfig = require('../config').loadConfig;
-        const cfg = loadConfig();
-        const storagePath = path.isAbsolute(cfg.storage?.local_path)
-          ? cfg.storage.local_path
-          : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-        const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-        localPath = await downloadVideoToLocal(storagePath, directVideo.video_url, videoGenId, log, projectSubdir);
-        await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
-        if (localPath) {
-          finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
-            || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
-            || directVideo.video_url;
-        }
-      } catch (_) {}
-      try {
-        db.prepare(
-          'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-        ).run('completed', finalVideoUrl, localPath, now2, now2, videoGenId);
-      } catch (e) {
-        if ((e.message || '').includes('completed_at')) {
-          db.prepare(
-            'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-          ).run('completed', finalVideoUrl, localPath, now2, videoGenId);
-        } else throw e;
-      }
-      // 自动更新分镜的主视频
-      if (row.storyboard_id) {
-        try {
-          db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-            finalVideoUrl, localPath, now2, row.storyboard_id
-          );
-          log.info('Updated storyboard video', { storyboard_id: row.storyboard_id, video_url: finalVideoUrl });
-        } catch (_) {}
-      }
-      if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: finalVideoUrl, status: 'completed' });
-      log.info('Video generation completed', { id: videoGenId, video_url: finalVideoUrl, local_path: localPath });
+      await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, directVideo.video_url, '');
       return;
     }
     if (result.video_url) {
@@ -420,74 +568,10 @@ async function processVideoGeneration(db, log, videoGenId) {
       return;
     }
     if (result.task_id) {
-      db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run(
-        'processing',
-        now2,
-        videoGenId
-      );
-      const POLL_INTERVAL_MS = 10000;
-      const { resolveVideoGenerationTimeoutMinutes } = require('../config/videoGeneration');
-      const generationTimeoutMinutes = resolveVideoGenerationTimeoutMinutes(cfg);
-      const pollMaxAttempts = Math.max(
-        1,
-        Math.ceil((generationTimeoutMinutes * 60 * 1000) / POLL_INTERVAL_MS)
-      );
-      const pollResult = await videoClient.pollVideoTask(
-        db,
-        log,
-        videoGenId,
-        result.task_id,
-        config,
-        pollMaxAttempts,
-        POLL_INTERVAL_MS
-      );
-      const now3 = new Date().toISOString();
-      const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
-      if (polledVideo.ok) {
-        let localPath = null;
-        let finalVideoUrl = polledVideo.video_url;
-        try {
-          const loadConfig = require('../config').loadConfig;
-          const cfg = loadConfig();
-          const storagePath = path.isAbsolute(cfg.storage?.local_path)
-            ? cfg.storage.local_path
-            : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-          const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-          localPath = await downloadVideoToLocal(storagePath, polledVideo.video_url, videoGenId, log, projectSubdir);
-          await maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
-          if (localPath) {
-            finalVideoUrl = await uploadService.uploadLocalPathToStorage(storagePath, localPath, 'video/mp4', log)
-              || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
-              || polledVideo.video_url;
-          }
-        } catch (_) {}
-        try {
-          db.prepare(
-            'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-          ).run('completed', finalVideoUrl, localPath, now3, now3, videoGenId);
-        } catch (e) {
-          if ((e.message || '').includes('completed_at')) {
-            db.prepare(
-              'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-            ).run('completed', finalVideoUrl, localPath, now3, videoGenId);
-          } else throw e;
-        }
-        // 自动更新分镜的主视频
-        if (row.storyboard_id) {
-          try {
-            db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-              finalVideoUrl, localPath, now3, row.storyboard_id
-            );
-            log.info('Updated storyboard video (poll)', { storyboard_id: row.storyboard_id, video_url: finalVideoUrl });
-          } catch (_) {}
-        }
-        if (row.task_id) taskService.updateTaskResult(db, row.task_id, { video_generation_id: videoGenId, video_url: finalVideoUrl, status: 'completed' });
-        log.info('Video generation completed (after poll)', { id: videoGenId, local_path: localPath });
-      } else {
-        setVideoGenFailed(db, videoGenId, polledVideo.error, now3);
-        if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
-        log.error('Video generation failed (after poll)', { id: videoGenId, error: polledVideo.error });
-      }
+      db.prepare(
+        'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
+      ).run('processing', result.task_id, now2, videoGenId);
+      await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, result.task_id, config);
       return;
     }
     setVideoGenFailed(db, videoGenId, '未返回 task_id 或 video_url', now2);
@@ -497,6 +581,8 @@ async function processVideoGeneration(db, log, videoGenId) {
     setVideoGenFailed(db, videoGenId, err.message, now2);
     if (row && row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
     log.error('Video generation error', { id: videoGenId, error: err.message });
+  } finally {
+    activeVideoPolls.delete(videoGenId);
   }
 }
 
@@ -511,4 +597,5 @@ module.exports = {
   getById,
   deleteById,
   processVideoGeneration,
+  resumeProcessingVideoGenerations,
 };

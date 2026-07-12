@@ -137,6 +137,7 @@ function ensureAllColumns(database) {
     { name: 'storyboard_number', type: 'INTEGER DEFAULT 0' },
     { name: 'title',             type: 'TEXT' },
     { name: 'description',       type: 'TEXT' },
+    { name: 'layout_description', type: 'TEXT' },   // 画面布局与人物站位（首尾帧模式空间合同）
     { name: 'location',          type: 'TEXT' },
     { name: 'time',              type: 'TEXT' },
     { name: 'duration',          type: 'REAL' },
@@ -172,6 +173,10 @@ function ensureAllColumns(database) {
     { name: 'narration_audio_local_path', type: 'TEXT' },         // 解说旁白 TTS 本地路径
     { name: 'creation_mode',     type: 'TEXT DEFAULT \'classic\'' }, // classic | universal
     { name: 'universal_segment_text', type: 'TEXT' },              // 全能模式片段描述（@ 引用等）
+    { name: 'first_frame_image_id', type: 'INTEGER' },
+    { name: 'last_frame_image_id',  type: 'INTEGER' },
+    { name: 'last_frame_image_url', type: 'TEXT' },
+    { name: 'last_frame_local_path', type: 'TEXT' },
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },
@@ -200,6 +205,7 @@ function ensureAllColumns(database) {
     { name: 'ref_image',         type: 'TEXT' },   // 用户上传的参考图（本地相对路径或 URL），独立于 AI 生成的主图
     { name: 'stages',            type: 'TEXT' },   // JSON: 多阶段造型 [{episode_range:[1,3], appearance:"..."}]
     { name: 'seedance2_asset', type: 'TEXT' },   // JSON: 即梦/Seedance2 素材库认证 hub_asset_id / asset_url 等
+    { name: 'seedance2_voice_asset', type: 'TEXT' }, // JSON: Seedance 2.0 音色参考音频（仅 SD2 模型有效）
     { name: 'negative_prompt', type: 'TEXT' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },
@@ -306,6 +312,7 @@ function ensureAllColumns(database) {
   ensureColumns(database, 'image_generations', [
     { name: 'storyboard_id',    type: 'INTEGER' },
     { name: 'drama_id',         type: 'INTEGER' },
+    { name: 'episode_id',       type: 'INTEGER' },
     { name: 'scene_id',         type: 'INTEGER' },
     { name: 'character_id',     type: 'INTEGER' },
     { name: 'provider',         type: 'TEXT' },
@@ -314,10 +321,13 @@ function ensureAllColumns(database) {
     { name: 'model',            type: 'TEXT' },
     { name: 'frame_type',       type: 'TEXT' },
     { name: 'reference_images', type: 'TEXT' },
+    { name: 'use_first_frame_layout_lock', type: 'INTEGER' },
     { name: 'size',             type: 'TEXT' },
     { name: 'quality',          type: 'TEXT' },
     { name: 'image_url',        type: 'TEXT' },
     { name: 'local_path',       type: 'TEXT' },
+    { name: 'width',            type: 'INTEGER' },
+    { name: 'height',           type: 'INTEGER' },
     { name: 'status',           type: 'TEXT' },
     { name: 'task_id',          type: 'TEXT' },
     { name: 'completed_at',     type: 'TEXT' },
@@ -348,6 +358,7 @@ function ensureAllColumns(database) {
     { name: 'local_path',           type: 'TEXT' },
     { name: 'status',               type: 'TEXT' },
     { name: 'task_id',              type: 'TEXT' },
+    { name: 'provider_task_id',     type: 'TEXT' },
     { name: 'scene_id',             type: 'INTEGER' },
     { name: 'completed_at',         type: 'TEXT' },
     { name: 'error_msg',            type: 'TEXT' },

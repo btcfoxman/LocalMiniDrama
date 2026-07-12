@@ -167,8 +167,8 @@ function listJimeng2MaterialAssets(log) {
   return async (req, res) => {
     const body = req.body || {};
     const base_url = (body.base_url || '').toString().trim().replace(/\/$/, '');
-    let api_key = (body.api_key || '').toString().trim();
-    if (/^bearer\s+/i.test(api_key)) api_key = api_key.replace(/^bearer\s+/i, '').trim();
+    const { normalizeMaterialHubToken } = require('../services/jimengMaterialHubService');
+    let api_key = normalizeMaterialHubToken(body.api_key || '');
     if (!base_url || !api_key) {
       return response.badRequest(res, '请先填写网关 URL 与 Token');
     }
