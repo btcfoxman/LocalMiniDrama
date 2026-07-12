@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Env Sync"
+  short_description: "Sync GitHub Environment secrets and variables"
+  default_prompt: "Use $github-env-sync-skill to dry-run and then sync GitHub Environment secrets and variables from my env text."

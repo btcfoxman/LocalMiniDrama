@@ -164,37 +164,37 @@ function hashesFor(filePath) {
 }
 
 function createS3Client() {
-  const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
-  const forcePathStyle = boolValue(env('OSS_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
+  const endpoint = normalizeUrl(requiredEnv('S3_ENDPOINT'), 'S3_ENDPOINT');
+  const forcePathStyle = boolValue(env('S3_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
   return new S3Client({
     endpoint,
-    region: env('OSS_REGION', 'us-east-1'),
+    region: env('S3_REGION', 'us-east-1'),
     forcePathStyle,
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
     credentials: {
-      accessKeyId: requiredEnv('OSS_ACCESS_KEY_ID'),
-      secretAccessKey: requiredEnv('OSS_ACCESS_KEY_SECRET'),
+      accessKeyId: requiredEnv('S3_ACCESS_KEY_ID'),
+      secretAccessKey: requiredEnv('S3_SECRET_ACCESS_KEY'),
     },
   });
 }
 
 function createUploadContext() {
   const client = createS3Client();
-  const bucket = requiredEnv('OSS_BUCKET');
-  const endpoint = normalizeUrl(requiredEnv('OSS_ENDPOINT'), 'OSS_ENDPOINT');
-  const forcePathStyle = boolValue(env('OSS_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
+  const bucket = requiredEnv('S3_BUCKET');
+  const endpoint = normalizeUrl(requiredEnv('S3_ENDPOINT'), 'S3_ENDPOINT');
+  const forcePathStyle = boolValue(env('S3_FORCE_PATH_STYLE'), defaultForcePathStyle(endpoint));
   const publicBase = normalizeUrl(
-    env('OSS_PUBLIC_BASE_URL')
-      || env('OSS_BASE_URL')
+    env('S3_PUBLIC_BASE_URL')
+      || env('S3_BASE_URL')
       || buildDefaultPublicBase(endpoint, bucket, forcePathStyle),
-    'OSS_PUBLIC_BASE_URL'
+    'S3_PUBLIC_BASE_URL'
   );
-  const baseDir = trimSlashes(env('OSS_BASE_DIR', 'app-market'));
+  const baseDir = trimSlashes(env('S3_BASE_DIR', 'app-market'));
   return { client, bucket, publicBase, baseDir };
 }
 
-async function putOssFile(context, filePath, key, contentType) {
+async function putS3File(context, filePath, key, contentType) {
   const stat = fs.statSync(filePath);
   const body = fs.readFileSync(filePath);
   await context.client.send(new PutObjectCommand({
@@ -223,7 +223,7 @@ async function uploadArtifacts(files, options, context) {
       file.fileName,
     ].filter(Boolean).map(trimSlashes).join('/');
 
-    const uploaded = await putOssFile(context, file.absPath, key, contentTypeFor(file.fileName));
+    const uploaded = await putS3File(context, file.absPath, key, contentTypeFor(file.fileName));
     Object.assign(file, hashesFor(file.absPath), {
       key: uploaded.key,
       downloadUrl: uploaded.downloadUrl,
@@ -252,7 +252,7 @@ async function uploadAppIcon(options, context) {
     'icons',
     fileName,
   ].filter(Boolean).map(trimSlashes).join('/');
-  const uploaded = await putOssFile(context, iconPath, key, contentTypeFor(fileName));
+  const uploaded = await putS3File(context, iconPath, key, contentTypeFor(fileName));
   console.log(`Uploaded app icon ${fileName} -> ${uploaded.downloadUrl}`);
   return uploaded.downloadUrl;
 }

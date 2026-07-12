@@ -25,3 +25,8 @@ desktop/release-icon-test
 desktop/release-icon-test-7
 build
 frontweb-edu
+
+# Local temporary and Python cache artifacts
+tmp/
+__pycache__/
+*.pyc
