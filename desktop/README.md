@@ -89,6 +89,12 @@ npm run dist:cn
 
 ## 打包后如何看日志 / 调试
 
+### 自动更新与发布保留
+
+- 正式打包客户端启动约 15 秒后自动检查 stable 渠道，按操作系统与 CPU 架构下载更新；下载完成后提示重启安装。
+- 默认更新服务为 `https://aiid.qzz.io`，可用 `OVERSEASDRAMA_UPDATE_SERVICE_URL` 覆盖。
+- 应用市场发布成功后，S3 仅保留当前版本和最近 1 个历史版本；清理范围限定为当前 app key 与 channel。可用 `APP_MARKET_S3_HISTORY_VERSIONS` 调整历史版本数量，或用 `APP_MARKET_S3_PRUNE_ENABLED=false` 临时关闭。
+
 ### 1. 查看后端日志文件（推荐）
 
 双击运行 exe 时，后端日志会自动写入：

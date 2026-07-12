@@ -46,7 +46,7 @@ const BACKEND_NODE_PATH = path.join(__dirname, '..', 'backend-node');
 const DEFAULT_PORT = 5679;
 // Client-facing app-market update service. CI's ORCHESTRATION_API_URL is only
 // used to publish release metadata and may point to a different/internal API.
-const DEFAULT_UPDATE_SERVICE_BASE_URL = 'https://download-drama.kuaxixing.com';
+const DEFAULT_UPDATE_SERVICE_BASE_URL = 'https://aiid.qzz.io';
 
 let serverInstance = null;
 let mainWindow = null;

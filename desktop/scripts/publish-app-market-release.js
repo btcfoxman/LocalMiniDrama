@@ -3,7 +3,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} = require('@aws-sdk/client-s3');
 
 const rootDir = path.join(__dirname, '..');
 const pkg = require(path.join(rootDir, 'package.json'));
@@ -70,6 +75,77 @@ function assertSemver(version) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`version must be SemVer without leading v: ${version}`);
   }
+}
+
+function parseSemver(version) {
+  const match = String(version || '').trim().match(
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+  );
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+function comparePrerelease(a, b) {
+  if (!a.length && !b.length) return 0;
+  if (!a.length) return 1;
+  if (!b.length) return -1;
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    if (a[i] === undefined) return -1;
+    if (b[i] === undefined) return 1;
+    if (a[i] === b[i]) continue;
+    const aNumeric = /^\d+$/.test(a[i]);
+    const bNumeric = /^\d+$/.test(b[i]);
+    if (aNumeric && bNumeric) return Number(a[i]) - Number(b[i]);
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return a[i] > b[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+function compareSemver(a, b) {
+  const parsedA = parseSemver(a);
+  const parsedB = parseSemver(b);
+  if (!parsedA || !parsedB) throw new Error(`cannot compare invalid SemVer: ${a}, ${b}`);
+  for (const field of ['major', 'minor', 'patch']) {
+    if (parsedA[field] !== parsedB[field]) return parsedA[field] - parsedB[field];
+  }
+  return comparePrerelease(parsedA.prerelease, parsedB.prerelease);
+}
+
+function planReleaseRetention(keys, releasePrefix, currentVersion, historyCount = 1) {
+  const prefix = `${trimSlashes(releasePrefix)}/`;
+  const keysByVersion = new Map();
+  for (const rawKey of keys || []) {
+    const key = String(rawKey || '');
+    if (!key.startsWith(prefix)) continue;
+    const version = key.slice(prefix.length).split('/')[0];
+    if (!parseSemver(version)) continue;
+    const versionKeys = keysByVersion.get(version) || [];
+    versionKeys.push(key);
+    keysByVersion.set(version, versionKeys);
+  }
+
+  const historicalVersions = [...keysByVersion.keys()]
+    .filter((version) => version !== currentVersion)
+    .sort((a, b) => compareSemver(b, a));
+  const safeHistoryCount = Math.max(0, Math.floor(Number(historyCount) || 0));
+  const keepVersions = new Set([currentVersion, ...historicalVersions.slice(0, safeHistoryCount)]);
+  const deleteVersions = [...keysByVersion.keys()]
+    .filter((version) => !keepVersions.has(version))
+    .sort((a, b) => compareSemver(b, a));
+  const deleteKeys = deleteVersions.flatMap((version) => keysByVersion.get(version) || []);
+
+  return {
+    keepVersions: [...keepVersions].filter((version) => keysByVersion.has(version) || version === currentVersion),
+    deleteVersions,
+    deleteKeys,
+  };
 }
 
 function joinUrl(base, key) {
@@ -192,6 +268,64 @@ function createUploadContext() {
   );
   const baseDir = trimSlashes(env('S3_BASE_DIR', 'app-market'));
   return { client, bucket, publicBase, baseDir };
+}
+
+async function listS3Keys(context, prefix) {
+  const keys = [];
+  let continuationToken;
+  do {
+    const response = await context.client.send(new ListObjectsV2Command({
+      Bucket: context.bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    for (const item of response.Contents || []) {
+      if (item.Key) keys.push(item.Key);
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
+}
+
+async function pruneHistoricalReleases(context, options) {
+  if (!boolValue(env('APP_MARKET_S3_PRUNE_ENABLED'), true)) {
+    console.log('S3 release pruning disabled by APP_MARKET_S3_PRUNE_ENABLED.');
+    return { keepVersions: [options.version], deleteVersions: [], deleteKeys: [] };
+  }
+
+  const historyCount = Math.max(
+    0,
+    Math.min(10, Math.floor(numberValue(env('APP_MARKET_S3_HISTORY_VERSIONS', '1'), 1)))
+  );
+  const releasePrefix = [context.baseDir, options.appKey, options.channel]
+    .filter(Boolean)
+    .map(trimSlashes)
+    .join('/');
+  const keys = await listS3Keys(context, `${releasePrefix}/`);
+  const plan = planReleaseRetention(keys, releasePrefix, options.version, historyCount);
+
+  for (let offset = 0; offset < plan.deleteKeys.length; offset += 1000) {
+    const batch = plan.deleteKeys.slice(offset, offset + 1000);
+    const response = await context.client.send(new DeleteObjectsCommand({
+      Bucket: context.bucket,
+      Delete: {
+        Objects: batch.map((Key) => ({ Key })),
+        Quiet: true,
+      },
+    }));
+    if (response.Errors?.length) {
+      const summary = response.Errors
+        .map((item) => `${item.Key || '?'}: ${item.Code || item.Message || 'delete failed'}`)
+        .join('; ');
+      throw new Error(`failed to prune S3 release objects: ${summary}`);
+    }
+  }
+
+  console.log(
+    `S3 release retention complete: keep=${plan.keepVersions.join(',') || '(none)'} `
+      + `deleted_versions=${plan.deleteVersions.join(',') || '(none)'} deleted_objects=${plan.deleteKeys.length}`
+  );
+  return plan;
 }
 
 async function putS3File(context, filePath, key, contentType) {
@@ -369,9 +503,18 @@ async function main() {
   });
 
   await publishRelease(payload);
+  await pruneHistoricalReleases(uploadContext, options);
 }
 
-main().catch((err) => {
-  console.error(err && err.stack ? err.stack : err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err && err.stack ? err.stack : err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  compareSemver,
+  planReleaseRetention,
+  pruneHistoricalReleases,
+};
