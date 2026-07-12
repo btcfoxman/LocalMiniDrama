@@ -246,7 +246,11 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
-          npx electron-builder --mac --config electron-builder-mac.json --publish never \
+          npx electron-builder --mac dmg zip --x64 --config electron-builder-mac.json --publish never \
+            --config.extraMetadata.updateAppKey=overseas-drama-desktop \
+            --config.extraMetadata.updateChannel="$APP_MARKET_CHANNEL" \
+            --config.extraMetadata.updateEnabled=true
+          npx electron-builder --mac dmg zip --arm64 --config electron-builder-mac.json --publish never \
             --config.extraMetadata.updateAppKey=overseas-drama-desktop \
             --config.extraMetadata.updateChannel="$APP_MARKET_CHANNEL" \
             --config.extraMetadata.updateEnabled=true
