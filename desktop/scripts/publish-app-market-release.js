@@ -345,6 +345,69 @@ async function putS3File(context, filePath, key, contentType) {
   };
 }
 
+async function putS3Content(context, key, body, contentType) {
+  const content = Buffer.from(body);
+  await context.client.send(new PutObjectCommand({
+    Bucket: context.bucket,
+    Key: key,
+    Body: content,
+    ContentLength: content.length,
+    ContentType: contentType,
+    CacheControl: 'public, max-age=60, stale-while-revalidate=300',
+  }));
+  return joinUrl(context.publicBase, key);
+}
+
+function yamlScalar(value) {
+  return JSON.stringify(String(value ?? ''));
+}
+
+function buildElectronUpdateManifest(payload) {
+  const lines = [
+    `version: ${yamlScalar(payload.version)}`,
+    'files:',
+    `  - url: ${yamlScalar(payload.download_url)}`,
+    `    sha512: ${yamlScalar(payload.sha512)}`,
+    `    size: ${Number(payload.size_bytes) || 0}`,
+    `path: ${yamlScalar(payload.download_url)}`,
+    `sha512: ${yamlScalar(payload.sha512)}`,
+    `releaseDate: ${yamlScalar(payload.published_at)}`,
+  ];
+  if (payload.release_notes) lines.push(`releaseNotes: ${yamlScalar(payload.release_notes)}`);
+  if (Number.isFinite(Number(payload.staging_percentage))) {
+    lines.push(`stagingPercentage: ${Number(payload.staging_percentage)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+async function publishPublicReleaseMetadata(payload, options, context) {
+  const publishedAt = payload.published_at || new Date().toISOString();
+  const publicPayload = { ...payload, schema_version: 1, published_at: publishedAt };
+  const root = [context.baseDir, options.appKey, options.channel]
+    .filter(Boolean)
+    .map(trimSlashes)
+    .join('/');
+  const indexKey = `${root}/latest/${options.platform}/${options.arch}.json`;
+  const manifestName = options.platform === 'darwin' ? 'latest-mac.yml' : 'latest.yml';
+  const manifestKey = `${root}/electron/update/${options.platform}/${options.arch}/${manifestName}`;
+
+  const indexUrl = await putS3Content(
+    context,
+    indexKey,
+    `${JSON.stringify(publicPayload, null, 2)}\n`,
+    'application/json; charset=utf-8'
+  );
+  const manifestUrl = await putS3Content(
+    context,
+    manifestKey,
+    buildElectronUpdateManifest(publicPayload),
+    'application/x-yaml; charset=utf-8'
+  );
+  console.log(`Published public release index -> ${indexUrl}`);
+  console.log(`Published Electron update manifest -> ${manifestUrl}`);
+  return { indexKey, indexUrl, manifestKey, manifestUrl };
+}
+
 async function uploadArtifacts(files, options, context) {
   for (const file of files) {
     const key = [
@@ -503,6 +566,7 @@ async function main() {
   });
 
   await publishRelease(payload);
+  await publishPublicReleaseMetadata(payload, options, uploadContext);
   await pruneHistoricalReleases(uploadContext, options);
 }
 
@@ -514,7 +578,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildElectronUpdateManifest,
   compareSemver,
+  createUploadContext,
   planReleaseRetention,
+  publishPublicReleaseMetadata,
   pruneHistoricalReleases,
 };
