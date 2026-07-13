@@ -2654,6 +2654,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
+import { canUseUniversalOmniVideoApi } from '@/utils/videoModelCapabilities'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -6284,38 +6285,6 @@ async function getActiveVideoAiConfig() {
   }
   activeVideoAiConfigCacheAt = now
   return activeVideoAiConfigCache
-}
-
-function videoModelNameFromAiConfig(cfg) {
-  if (!cfg) return ''
-  const dm = (cfg.default_model || '').toString().trim()
-  if (dm) return dm
-  const m = cfg.model
-  if (Array.isArray(m) && m.length) return String(m[0]).trim()
-  return String(m || '').trim()
-}
-
-/** 模型名含 seedance 且含 2-0（与后端 videoClient 判定 Seedance 2.x 对齐） */
-function isSeedance2VideoModel(modelName) {
-  const m = String(modelName || '').toLowerCase()
-  if (!m.includes('seedance')) return false
-  return /2[-_]0/.test(m) || /seedance[-_]?2|seedance2/.test(m)
-}
-
-/** 全能分镜 + 当前视频配置是否可走多图参考（火山 Seedance 2.0、可灵 Omni、Agnes Video 等） */
-function canUseUniversalOmniVideoApi(cfg) {
-  if (!cfg) return false
-  const proto = String(cfg.api_protocol || '').toLowerCase()
-  const provider = String(cfg.provider || '').toLowerCase()
-  const model = videoModelNameFromAiConfig(cfg).toLowerCase()
-  if (proto === 'kling_omni') return true
-  if (proto === 'volcengine_omni') {
-    return isSeedance2VideoModel(model)
-  }
-  if (proto === 'agnes' || provider === 'agnes' || /agnes-video/.test(model)) {
-    return true
-  }
-  return false
 }
 
 async function confirmUniversalNonSeedance2Video() {
