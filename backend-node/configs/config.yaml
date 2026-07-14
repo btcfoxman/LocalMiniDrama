@@ -36,8 +36,12 @@ image_proxy:
   enabled: true
   upload_url: https://imageproxy.zhongzhuan.chat/api/upload
   token: test
-  expire_hours: 23
+  expire_hours: 2   # 按图床实际 TTL 调整
   use_for_gemini: true
+  use_for_video: true
+  # 图床上传超时（秒），避免网络不通时长时间卡住
+  upload_timeout_seconds: 180
+  upload_max_attempts: 2
 # 异步视频任务轮询总超时（分钟）；省略或 ≤0 时默认 30
 video:
   generation_timeout_minutes: 30
@@ -57,10 +61,3 @@ style:
 vendor_lock:
   enabled: false
   config_file: ai-configs-qudao.json
-image_proxy:
-  expire_hours: 2   # 按图床实际 TTL 调整
-  use_for_video: true
-  # 图床上传超时（秒），避免网络不通时长时间卡住
-  upload_timeout_seconds: 180
-  upload_max_attempts: 2
-  # upload_url: https://imageproxy.zhongzhuan.chat/api/upload

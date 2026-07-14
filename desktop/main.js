@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, Tray, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { repairDuplicateTopLevelMappings } = require('./configRecovery');
 
 // 显式固定 userData 目录，使开发模式与打包 exe 路径完全一致，防止 productName 变更导致路径漂移
 const USERDATA_DIR = path.join(app.getPath('appData'), 'overseasdrama-desktop');
@@ -124,8 +125,21 @@ function ensureBackendCwd(backendCwd) {
   if (fs.existsSync(bundledConfig) && fs.existsSync(configPath)) {
     try {
       const yaml = require('js-yaml');
-      const userCfg = yaml.load(fs.readFileSync(configPath, 'utf8')) || {};
-      const bundledCfg = yaml.load(fs.readFileSync(bundledConfig, 'utf8')) || {};
+      const userConfigRaw = fs.readFileSync(configPath, 'utf8');
+      const repaired = repairDuplicateTopLevelMappings(userConfigRaw);
+      if (repaired.repairedKeys.length) {
+        const safeTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupPath = `${configPath}.pre-repair-${safeTimestamp}.bak`;
+        fs.copyFileSync(configPath, backupPath);
+        fs.writeFileSync(configPath, repaired.text, 'utf8');
+        writeMainLog(
+          `[config] Repaired duplicate YAML sections: ${repaired.repairedKeys.join(', ')}; backup=${backupPath}`
+        );
+      }
+      const bundledRaw = fs.readFileSync(bundledConfig, 'utf8');
+      const repairedBundled = repairDuplicateTopLevelMappings(bundledRaw);
+      const userCfg = yaml.load(repaired.text) || {};
+      const bundledCfg = yaml.load(repairedBundled.text) || {};
       let changed = false;
       if (bundledCfg.vendor_lock !== undefined) {
         userCfg.vendor_lock = bundledCfg.vendor_lock;
@@ -140,6 +154,7 @@ function ensureBackendCwd(backendCwd) {
       }
     } catch (e) {
       console.warn('[config] Failed to sync bundled config sections:', e.message);
+      writeMainLog(`[config] Failed to repair/sync config: ${e.stack || e.message}`);
     }
   }
 }
