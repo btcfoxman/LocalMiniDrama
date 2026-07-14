@@ -1,6 +1,6 @@
 {
   "name": "overseasdrama-desktop",
-  "version": "1.2.22",
+  "version": "1.2.23",
   "description": "OverseasDrama desktop client",
   "main": "main.js",
   "author": "OverseasDrama",
@@ -88,8 +88,7 @@
     ],
     "win": {
       "target": ["nsis", "portable"],
-      "icon": "assets/icons/icon.ico",
-      "signAndEditExecutable": false
+      "icon": "assets/icons/icon.ico"
     },
     "mac": {
       "icon": "assets/icons/icon.icns"
