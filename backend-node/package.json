@@ -1,6 +1,6 @@
 {
   "name": "LocalMiniDrama-backend",
-  "version": "1.2.24",
+  "version": "1.2.25",
   "description": "Node.js backend for LocalMiniDrama",
   "main": "src/server.js",
   "scripts": {

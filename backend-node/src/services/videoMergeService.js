@@ -81,34 +81,64 @@ function getStorageRoot() {
   return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
 }
 
+function decodeMediaPath(value) {
+  const clean = String(value || '').split(/[?#]/, 1)[0];
+  try {
+    return decodeURIComponent(clean);
+  } catch (_) {
+    return clean;
+  }
+}
+
+/**
+ * Resolve a browser-facing local media URL back to a file below storageRoot.
+ * Local video records commonly contain /static/<storage-relative-path>; this
+ * must not be passed to fetch(), because Node cannot parse a relative URL.
+ */
+function resolveStorageMediaPath(videoUrl, baseUrl, storageRoot) {
+  if (!videoUrl || typeof videoUrl !== 'string') return null;
+  const raw = videoUrl.trim();
+  if (!raw) return null;
+
+  let relativePath = null;
+  const cleanBase = String(baseUrl || '').trim().replace(/\/$/, '');
+  if (cleanBase && (raw === cleanBase || raw.startsWith(cleanBase + '/'))) {
+    relativePath = raw.slice(cleanBase.length).replace(/^\/+/, '');
+  } else if (raw.startsWith('/static/')) {
+    relativePath = raw.slice('/static/'.length);
+  } else if (raw.startsWith('static/')) {
+    relativePath = raw.slice('static/'.length);
+  } else if (!/^https?:\/\//i.test(raw) && !path.isAbsolute(raw)) {
+    relativePath = raw.replace(/^\/+/, '');
+  }
+
+  if (!relativePath) return null;
+  const decoded = decodeMediaPath(relativePath).replace(/[\\/]+/g, path.sep);
+  const root = path.resolve(storageRoot);
+  const candidate = path.resolve(root, decoded);
+  if (candidate !== root && !candidate.startsWith(root + path.sep)) return null;
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
 /** 将 video_url 解析为本地文件路径，或下载到 temp 返回路径 */
 async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, index, log) {
   if (!videoUrl || typeof videoUrl !== 'string') return null;
   const u = videoUrl.trim();
-  // 1) URL 以 baseUrl 开头（如 http://localhost:5679/static）-> 对应 storageRoot 下相对路径
-  if (baseUrl && (u.startsWith(baseUrl) || u.startsWith(baseUrl.replace(/\/$/, '')))) {
-    const base = baseUrl.replace(/\/$/, '');
-    const rel = u.startsWith(base + '/') ? u.slice(base.length + 1) : u.slice(base.length).replace(/^\//, '');
-    if (rel && !rel.startsWith('http')) {
-      const localPath = path.join(storageRoot, rel.replace(/\//g, path.sep));
-      if (fs.existsSync(localPath)) {
-        log.info('Video merge: using local static file', { index, path: localPath });
-        return localPath;
-      }
-    }
+  // 1) /static/...、static/...、storage 相对路径或 baseUrl 下的 URL
+  const storagePath = resolveStorageMediaPath(u, baseUrl, storageRoot);
+  if (storagePath) {
+    log.info('Video merge: using local static file', { index, path: storagePath });
+    return storagePath;
   }
   // 2) 已是本地绝对路径且存在
   if (path.isAbsolute(u) && fs.existsSync(u)) {
     log.info('Video merge: using absolute path', { index, path: u });
     return u;
   }
-  // 3) 相对路径（相对 storageRoot）
-  if (!u.startsWith('http://') && !u.startsWith('https://')) {
-    const localPath = path.join(storageRoot, u.replace(/^\//, '').replace(/\//g, path.sep));
-    if (fs.existsSync(localPath)) {
-      log.info('Video merge: using relative path', { index, path: localPath });
-      return localPath;
-    }
+  // 3) 未解析到文件的相对地址不能交给 fetch
+  if (!/^https?:\/\//i.test(u)) {
+    log.warn('Video merge: local file not found', { index, url: u, storage_root: storageRoot });
+    return null;
   }
   // 4) 远程 URL：下载到 temp
   const ext = u.includes('.mp4') ? '.mp4' : u.includes('.webm') ? '.webm' : '.mp4';
@@ -149,10 +179,12 @@ function runFfmpegConcat(localPaths, outputPath, log) {
     const result = spawnSync(ffmpegBin, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
     if (result.error) {
       log.warn('Video merge: ffmpeg spawn error', { error: result.error.message });
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
       return false;
     }
     if (result.status !== 0) {
       log.warn('Video merge: ffmpeg failed', { stderr: result.stderr?.slice(-500) });
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
       return false;
     }
     return true;
@@ -161,8 +193,19 @@ function runFfmpegConcat(localPaths, outputPath, log) {
   }
 }
 
+function markVideoMergeFailed(db, taskService, log, { mergeId, taskId, episodeId, error }) {
+  const completedAt = new Date().toISOString();
+  db.prepare(
+    'UPDATE video_merges SET status = ?, error_msg = ?, completed_at = ? WHERE id = ?'
+  ).run('failed', error, completedAt, mergeId);
+  db.prepare('UPDATE episodes SET status = ?, updated_at = ? WHERE id = ?')
+    .run('failed', completedAt, episodeId);
+  if (taskId) taskService.updateTaskError(db, taskId, error);
+  log.error('Video merge failed', { merge_id: mergeId, episode_id: episodeId, error });
+}
+
 /**
- * 异步处理视频合成：优先使用 ffmpeg 真正合并多段视频；失败或无 ffmpeg 时用首段作为 merged_url。
+ * 异步处理视频合成。只有所有分段都可读取且 FFmpeg 真正生成输出文件时才算成功。
  */
 async function processVideoMerge(db, log, mergeId, baseUrl) {
   const r = db.prepare('SELECT * FROM video_merges WHERE id = ? AND deleted_at IS NULL').get(mergeId);
@@ -179,15 +222,7 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
   db.prepare('UPDATE video_merges SET status = ? WHERE id = ?').run('processing', mergeId);
   const taskService = require('./taskService');
   if (scenes.length === 0) {
-    db.prepare('UPDATE video_merges SET status = ?, error_msg = ? WHERE id = ?').run('failed', '无有效视频片段', mergeId);
-    if (taskId) taskService.updateTaskError(db, taskId, '无有效视频片段');
-    return;
-  }
-  const first = scenes[0];
-  const mergedUrlFallback = first && first.video_url ? first.video_url : null;
-  if (!mergedUrlFallback) {
-    db.prepare('UPDATE video_merges SET status = ?, error_msg = ? WHERE id = ?').run('failed', '首段无视频地址', mergeId);
-    if (taskId) taskService.updateTaskError(db, taskId, '首段无视频地址');
+    markVideoMergeFailed(db, taskService, log, { mergeId, taskId, episodeId, error: '无有效视频片段' });
     return;
   }
 
@@ -213,6 +248,23 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     }
   }
 
+  const cleanupTempVideos = () => {
+    for (const p of toCleanup) {
+      try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+    }
+  };
+
+  if (localPaths.length !== scenes.length) {
+    cleanupTempVideos();
+    markVideoMergeFailed(db, taskService, log, {
+      mergeId,
+      taskId,
+      episodeId,
+      error: `视频片段读取不完整：需要 ${scenes.length} 段，实际读取 ${localPaths.length} 段`,
+    });
+    return;
+  }
+
   const ffmpegAvailable = hasLocalFfmpeg();
   log.info('Video merge: ffmpeg check', {
     merge_id: mergeId,
@@ -222,8 +274,30 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     cwd: process.cwd(),
   });
 
+  if (!ffmpegAvailable) {
+    cleanupTempVideos();
+    markVideoMergeFailed(db, taskService, log, {
+      mergeId,
+      taskId,
+      episodeId,
+      error: '未找到 FFmpeg，无法合成视频',
+    });
+    return;
+  }
+
+  if (localPaths.length > 100) {
+    cleanupTempVideos();
+    markVideoMergeFailed(db, taskService, log, {
+      mergeId,
+      taskId,
+      episodeId,
+      error: `视频片段数量 ${localPaths.length} 超过单次合成上限 100`,
+    });
+    return;
+  }
+
   let mergedRelativePath = null;
-  if (localPaths.length > 0 && ffmpegAvailable && localPaths.length <= 100) {
+  if (localPaths.length > 0) {
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, r.drama_id);
     const sub = projectSubdir && String(projectSubdir).trim();
     const mergedDir = sub
@@ -239,6 +313,17 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
         : path.join('videos', 'merged', outputFileName).replace(/\\/g, '/');
       log.info('Video merge completed (ffmpeg)', { merge_id: mergeId, episode_id: episodeId, output: mergedRelativePath });
     }
+  }
+
+  if (!mergedRelativePath) {
+    cleanupTempVideos();
+    markVideoMergeFailed(db, taskService, log, {
+      mergeId,
+      taskId,
+      episodeId,
+      error: 'FFmpeg 合成失败，请查看日志中的 Video merge: ffmpeg failed',
+    });
+    return;
   }
 
   let mergeOpts = {};
@@ -271,25 +356,17 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     }
   }
 
-  for (const p of toCleanup) {
-    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
-  }
+  cleanupTempVideos();
 
-  let finalMergedUrl = mergedRelativePath || mergedUrlFallback;
-  if (mergedRelativePath) {
-    finalMergedUrl = await uploadService.uploadLocalPathToStorage(storageRoot, mergedRelativePath, 'video/mp4', log)
-      || uploadService.buildPublicUrl(mergedRelativePath)
-      || mergedRelativePath;
-  }
+  const finalMergedUrl = await uploadService.uploadLocalPathToStorage(storageRoot, mergedRelativePath, 'video/mp4', log)
+    || uploadService.buildPublicUrl(mergedRelativePath)
+    || mergedRelativePath;
   db.prepare(
     'UPDATE video_merges SET status = ?, merged_url = ?, duration = ?, completed_at = ?, error_msg = ? WHERE id = ?'
   ).run('completed', finalMergedUrl, Math.round(totalDuration) || null, now, null, mergeId);
   db.prepare('UPDATE episodes SET video_url = ?, status = ?, updated_at = ? WHERE id = ?').run(finalMergedUrl, 'completed', now, episodeId);
   if (taskId) {
     taskService.updateTaskResult(db, taskId, { merge_id: mergeId, video_url: finalMergedUrl, duration: Math.round(totalDuration) });
-  }
-  if (!mergedRelativePath) {
-    log.info('Video merge completed (first-clip fallback)', { merge_id: mergeId, episode_id: episodeId });
   }
 }
 
@@ -299,4 +376,8 @@ module.exports = {
   create,
   deleteById,
   processVideoMerge,
+  _internals: {
+    resolveStorageMediaPath,
+    runFfmpegConcat,
+  },
 };
