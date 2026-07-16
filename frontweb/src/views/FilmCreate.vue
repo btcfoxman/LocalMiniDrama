@@ -1642,7 +1642,12 @@
           <el-alert type="error" :title="videoErrorMsg" show-icon />
         </div>
         <div v-if="currentEpisodeVideoUrl" class="video-preview-wrap">
-          <p class="video-preview-label">本集合成视频预览</p>
+          <div class="video-preview-header">
+            <p class="video-preview-label">本集合成视频预览</p>
+            <el-button type="primary" plain @click="downloadCurrentEpisodeVideo">
+              下载合成视频
+            </el-button>
+          </div>
           <video
             :src="currentEpisodeVideoUrl"
             controls
@@ -2655,6 +2660,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoModelCapabilities'
+import { normalizeMediaUrl } from '@/utils/mediaUrl'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -2804,12 +2810,27 @@ function trackFilmCreateAction(_action, _payload = {}) {
 }
 /** 当前集合成视频的播放地址（用于按钮下方预览） */
 const currentEpisodeVideoUrl = computed(() => {
-  const url = currentEpisode.value?.video_url
-  if (!url || !String(url).trim()) return ''
-  const s = String(url).trim()
-  if (s.startsWith('http://') || s.startsWith('https://')) return s
-  return '/static/' + s.replace(/^\//, '')
+  return normalizeMediaUrl(currentEpisode.value?.video_url)
 })
+
+function downloadCurrentEpisodeVideo() {
+  const url = currentEpisodeVideoUrl.value
+  if (!url) {
+    ElMessage.warning('尚未获取到可下载的合成视频')
+    return
+  }
+  const dramaTitle = String(store.drama?.title || '短剧').trim()
+  const episodeNumber = currentEpisode.value?.episode_number
+  const rawName = `${dramaTitle}${episodeNumber != null ? `-第${episodeNumber}集` : ''}.mp4`
+  const filename = rawName.replace(/[\\/:*?"<>|]/g, '_')
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
 
 const storyboardGenerating = computed(() =>
   isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
@@ -10629,9 +10650,16 @@ html.light .sb-narration-input :deep(.el-textarea__inner::placeholder) {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 .video-preview-label {
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 0.95rem;
   color: #a1a1aa;
+}
+.video-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 .video-preview-player {
   display: block;
