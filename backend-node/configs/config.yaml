@@ -42,9 +42,9 @@ image_proxy:
   # 图床上传超时（秒），避免网络不通时长时间卡住
   upload_timeout_seconds: 180
   upload_max_attempts: 2
-# 异步视频任务轮询总超时（分钟）；省略或 ≤0 时默认 30
+# 异步视频任务有效期（分钟）；默认且最长 6 小时，重启后按原创建时间继续计时
 video:
-  generation_timeout_minutes: 30
+  generation_timeout_minutes: 360
 ai:
   default_text_provider: openai
   default_image_provider: openai

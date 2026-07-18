@@ -35,6 +35,41 @@ function updateTaskStatus(db, taskId, status, progress, message) {
   ).run(status, progress ?? 0, message || '', now, completedAt, taskId);
 }
 
+/**
+ * 刷新进行中任务的心跳。已完成、已失败（包括用户取消）的任务不会被改写。
+ */
+function touchTask(db, taskId, message) {
+  const now = new Date().toISOString();
+  const hasMessage = typeof message === 'string' && message.trim() !== '';
+  const result = db.prepare(
+    `UPDATE async_tasks
+     SET status = 'processing',
+         message = CASE WHEN ? = 1 THEN ? ELSE message END,
+         updated_at = ?
+     WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+  ).run(hasMessage ? 1 : 0, hasMessage ? message.trim() : '', now, taskId);
+  return result.changes > 0;
+}
+
+/**
+ * 恢复有可持久化厂商任务 ID 的视频任务。
+ * 只允许恢复正常进行态，或旧版本启动清理造成的特定中断错误；不复活用户取消任务。
+ */
+function resumeRecoverableVideoTask(db, taskId, message) {
+  const now = new Date().toISOString();
+  const result = db.prepare(
+    `UPDATE async_tasks
+     SET status = 'processing', progress = CASE WHEN progress < 10 THEN 10 ELSE progress END,
+         message = ?, error = NULL, completed_at = NULL, updated_at = ?
+     WHERE id = ? AND deleted_at IS NULL
+       AND (
+         status IN ('pending', 'processing')
+         OR (status = 'failed' AND error = ?)
+       )`
+  ).run(message || '已恢复视频生成任务，正在查询厂商进度…', now, taskId, ORPHAN_ASYNC_TASK_MSG);
+  return result.changes > 0;
+}
+
 function updateTaskError(db, taskId, errMsg) {
   const now = new Date().toISOString();
   try {
@@ -93,12 +128,24 @@ function cancelTask(db, log, taskId, reason) {
 }
 
 /**
- * 进程内 setImmediate 任务在重启后会丢失；启动时将遗留的 pending/processing 标为失败，避免前端无限轮询。
+ * 进程内 setImmediate 任务在重启后会丢失；启动时将无法恢复的遗留任务标为失败。
+ * 已持久化 provider_task_id 的视频任务由 videoService 继续轮询，不在此处误杀。
  */
 function failOrphanedAsyncTasksOnStartup(db, log) {
   const rows = db.prepare(
-    `SELECT id, type, status, resource_id FROM async_tasks
-     WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+    `SELECT t.id, t.type, t.status, t.resource_id FROM async_tasks t
+     WHERE t.status IN ('pending', 'processing') AND t.deleted_at IS NULL
+       AND NOT (
+         t.type = 'video_generation'
+         AND EXISTS (
+           SELECT 1 FROM video_generations v
+           WHERE v.task_id = t.id
+             AND v.status = 'processing'
+             AND v.deleted_at IS NULL
+             AND v.provider_task_id IS NOT NULL
+             AND TRIM(v.provider_task_id) != ''
+         )
+       )`
   ).all();
   if (!rows.length) return 0;
   log.warn('Failing orphaned async tasks after startup', { count: rows.length });
@@ -119,6 +166,8 @@ module.exports = {
   getTask,
   getTasksByResource,
   updateTaskStatus,
+  touchTask,
+  resumeRecoverableVideoTask,
   updateTaskError,
   updateTaskResult,
   failOrphanedAsyncTasksOnStartup,

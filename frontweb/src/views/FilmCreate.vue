@@ -2641,6 +2641,7 @@ import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny,
 import { useTheme } from '@/composables/useTheme'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
+import { activeTaskTerminalMessage, pollMaxAttemptsForTask } from '@/utils/generationTaskLifetime'
 import { syncGeneratingSetsFromStore, buildEpisodeContext, buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
@@ -7233,8 +7234,8 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
   if (trackInStore && taskId) {
     genStore.markRunning({ ...resolvedMeta, taskId })
   }
-  const maxAttempts = 450  // 450 × 2s = 15 分钟
   const interval = 2000
+  const maxAttempts = pollMaxAttemptsForTask(resolvedMeta, interval)
   let attempts = 0
   return new Promise((resolve, reject) => {
     const finishStore = (status, error) => {
@@ -7260,6 +7261,12 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
           reject(Object.assign(new Error('全流程已取消'), { pipelineAborted: true }))
           return
         }
+        const terminalMessage = activeTaskTerminalMessage(t, resolvedMeta)
+        if (terminalMessage) {
+          finishStore('failed', terminalMessage)
+          resolve({ status: 'failed', error: terminalMessage })
+          return
+        }
         if (t.status === 'completed') {
           if (onDone) await onDone()
           finishStore('completed')
@@ -7277,7 +7284,9 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
       }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        const timeoutMsg = '任务查询超时（超过15分钟）'
+        const timeoutMsg = resolvedMeta.resourceType === GEN_RESOURCE.SB_VIDEO
+          ? '视频生成任务已超过6小时有效期，请重新生成'
+          : '任务查询超时（超过15分钟）'
         finishStore('failed', timeoutMsg)
         resolve({ status: 'timeout', error: timeoutMsg })
       }

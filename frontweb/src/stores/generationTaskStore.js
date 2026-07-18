@@ -3,6 +3,12 @@ import { ref, computed } from 'vue'
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
+import {
+  VIDEO_TASK_EXPIRED_MSG,
+  activeTaskTerminalMessage,
+  localTaskStaleMs,
+  pollMaxAttemptsForTask,
+} from '@/utils/generationTaskLifetime'
 
 /** 资源类型常量 */
 export const GEN_RESOURCE = {
@@ -20,11 +26,6 @@ export const GEN_RESOURCE = {
   GENERATE_STORYBOARD: 'generate_storyboard',
   GENERATE_STORY: 'generate_story',
 }
-
-/** 超过此时间仍为 running 且无进展则自动清理（毫秒） */
-const STALE_TASK_MS = 30 * 60 * 1000
-/** 后端任务 updated_at 长时间不变，视为重启后僵尸任务（毫秒） */
-const ORPHAN_PROCESSING_MS = 10 * 60 * 1000
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame'])
 const FIRST_FRAME_TYPES = new Set(['first', 'storyboard_first', 'head', 'first_frame'])
@@ -53,14 +54,6 @@ function isActiveTaskStatus(status) {
   return status === 'pending' || status === 'processing' || status === 'running'
 }
 
-function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
-  if (!remote || !isActiveTaskStatus(remote.status)) return false
-  const updatedAt = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
-  if (!updatedAt) return false
-  return Date.now() - updatedAt > staleMs
-}
-
-const ORPHAN_TASK_MSG = '任务长时间无进展，可能因服务重启而中断，请重新操作'
 const USER_CANCEL_TASK_MSG = '用户已取消'
 
 function taskFailMessage(t) {
@@ -204,7 +197,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     const now = Date.now()
 
     for (const t of running) {
-      if (t.startedAt && now - t.startedAt > STALE_TASK_MS) {
+      if (t.startedAt && now - t.startedAt > localTaskStaleMs(t)) {
         markFailed(t, '任务等待超时，已自动清除（请刷新确认是否已完成）')
         continue
       }
@@ -224,8 +217,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             markDone(t)
             continue
           }
-          if (isOrphanedProcessingTask(remote)) {
-            markFailed(t, ORPHAN_TASK_MSG)
+          const terminalMessage = activeTaskTerminalMessage(remote, t)
+          if (terminalMessage) {
+            markFailed(t, terminalMessage)
           }
         } catch (_) {
           // 网络异常跳过，下次 reconcile 再试
@@ -260,8 +254,8 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       return pollPromises.value.get(taskId)
     }
 
-    const maxAttempts = options.maxAttempts ?? 450
     const interval = options.interval ?? 2000
+    const maxAttempts = options.maxAttempts ?? pollMaxAttemptsForTask(meta, interval)
     const showErrorToast = options.showErrorToast !== false
     const showTimeoutToast = options.showTimeoutToast !== false
 
@@ -276,8 +270,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         attempts++
         try {
           const t = await taskAPI.get(taskId)
-          if (isOrphanedProcessingTask(t)) {
-            const errMsg = ORPHAN_TASK_MSG
+          const terminalMessage = activeTaskTerminalMessage(t, meta)
+          if (terminalMessage) {
+            const errMsg = terminalMessage
             markFailed(key, errMsg)
             if (showErrorToast && options.ElMessage) {
               options.ElMessage.warning(errMsg)
@@ -310,7 +305,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           setTimeout(tick, interval)
         } else {
           const timeoutMsg = options.timeoutMessage
-            || '生成任务已超时（超过15分钟），请刷新页面查看是否已完成'
+            || (meta?.resourceType === GEN_RESOURCE.SB_VIDEO
+              ? VIDEO_TASK_EXPIRED_MSG
+              : '生成任务已超时（超过15分钟），请刷新页面查看是否已完成')
           markFailed(key, timeoutMsg)
           if (showTimeoutToast && options.ElMessage) {
             options.ElMessage.warning(timeoutMsg)
@@ -347,9 +344,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
 
     try {
       const t = await taskAPI.get(taskId)
-      if (isOrphanedProcessingTask(t)) {
-        markFailed({ ...meta, taskId }, ORPHAN_TASK_MSG)
-        return { status: 'failed', error: ORPHAN_TASK_MSG }
+      const terminalMessage = activeTaskTerminalMessage(t, meta)
+      if (terminalMessage) {
+        markFailed({ ...meta, taskId }, terminalMessage)
+        return { status: 'failed', error: terminalMessage }
       }
       if (t.status === 'completed') {
         if (onDone) await onDone()

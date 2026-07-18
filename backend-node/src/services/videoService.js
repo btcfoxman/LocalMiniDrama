@@ -87,6 +87,10 @@ const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const uploadService = require('./uploadService');
 const { getFfmpegPath } = require('../utils/ffmpegPath');
+const {
+  VIDEO_GENERATION_EXPIRED_MSG,
+  resolveVideoGenerationLifetime,
+} = require('../config/videoGeneration');
 
 const fsp = fs.promises;
 
@@ -350,12 +354,21 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
 async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config) {
   const cfg = require('../config').loadConfig();
   const POLL_INTERVAL_MS = 10000;
-  const { resolveVideoGenerationTimeoutMinutes } = require('../config/videoGeneration');
-  const generationTimeoutMinutes = resolveVideoGenerationTimeoutMinutes(cfg);
+  const lifetime = resolveVideoGenerationLifetime(row.created_at, cfg);
+  if (lifetime.expired) {
+    const now = new Date().toISOString();
+    setVideoGenFailed(db, videoGenId, VIDEO_GENERATION_EXPIRED_MSG, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, VIDEO_GENERATION_EXPIRED_MSG);
+    log.warn('Video generation expired before provider polling', { id: videoGenId, created_at: row.created_at });
+    return;
+  }
   const pollMaxAttempts = Math.max(
     1,
-    Math.ceil((generationTimeoutMinutes * 60 * 1000) / POLL_INTERVAL_MS)
+    Math.ceil(lifetime.remainingMs / POLL_INTERVAL_MS)
   );
+  if (row.task_id) {
+    taskService.resumeRecoverableVideoTask(db, row.task_id, '厂商任务已提交，正在等待视频生成…');
+  }
   const pollResult = await videoClient.pollVideoTask(
     db,
     log,
@@ -363,7 +376,19 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
     providerTaskId,
     config,
     pollMaxAttempts,
-    POLL_INTERVAL_MS
+    POLL_INTERVAL_MS,
+    {
+      deadlineMs: lifetime.deadlineMs,
+      timeoutError: VIDEO_GENERATION_EXPIRED_MSG,
+      onHeartbeat: () => {
+        const heartbeatAt = new Date().toISOString();
+        db.prepare(
+          `UPDATE video_generations SET updated_at = ?
+           WHERE id = ? AND status = 'processing' AND deleted_at IS NULL`
+        ).run(heartbeatAt, videoGenId);
+        if (row.task_id) taskService.touchTask(db, row.task_id);
+      },
+    }
   );
   const now = new Date().toISOString();
   const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
@@ -388,6 +413,23 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   if (!row || row.status !== 'processing') return;
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
+
+  if (row.task_id) {
+    const resumed = taskService.resumeRecoverableVideoTask(
+      db,
+      row.task_id,
+      '软件恢复后已继续查询视频生成进度…'
+    );
+    if (!resumed) {
+      const task = taskService.getTask(db, row.task_id);
+      if (task?.status === 'failed') {
+        const error = task.error || task.message || '视频生成任务已终止';
+        setVideoGenFailed(db, videoGenId, error, new Date().toISOString());
+        log.info('Video generation resume skipped for terminal task', { videoGenId, task_id: row.task_id, error });
+        return;
+      }
+    }
+  }
 
   const config = videoClient.getDefaultVideoConfig(db, row.model);
   if (!config) {
@@ -422,6 +464,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
 
 /** 启动时恢复 processing 视频任务；无 provider_task_id 的视为中断 */
 function resumeProcessingVideoGenerations(db, log) {
+  const cfg = require('../config').loadConfig();
   const stuck = db
     .prepare(
       `SELECT id, task_id FROM video_generations
@@ -437,13 +480,25 @@ function resumeProcessingVideoGenerations(db, log) {
     log.warn('Marked interrupted video generation as failed', { videoGenId: s.id });
   }
 
-  const resumable = db
+  const candidates = db
     .prepare(
-      `SELECT id FROM video_generations
+      `SELECT id, task_id, created_at FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
          AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''`
     )
     .all();
+  const resumable = [];
+  for (const row of candidates) {
+    const lifetime = resolveVideoGenerationLifetime(row.created_at, cfg);
+    if (lifetime.expired) {
+      const now = new Date().toISOString();
+      setVideoGenFailed(db, row.id, VIDEO_GENERATION_EXPIRED_MSG, now);
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, VIDEO_GENERATION_EXPIRED_MSG);
+      log.warn('Expired video generation was not resumed', { videoGenId: row.id, created_at: row.created_at });
+      continue;
+    }
+    resumable.push(row);
+  }
   if (resumable.length) {
     log.info('Resuming video generation polls', { count: resumable.length });
   }
@@ -520,13 +575,15 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
-    if (row.task_id && hasOmniRefs) {
+    if (row.task_id) {
       taskService.updateTaskStatus(
         db,
         row.task_id,
         'processing',
         5,
-        `正在上传 ${reference_urls.length} 张参考图到图床…`
+        hasOmniRefs
+          ? `正在上传 ${reference_urls.length} 张参考图到图床…`
+          : '正在提交视频生成任务…'
       );
     }
     const result = await videoClient.callVideoApi(db, log, {
@@ -571,6 +628,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       db.prepare(
         'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
       ).run('processing', result.task_id, now2, videoGenId);
+      if (row.task_id) {
+        taskService.updateTaskStatus(db, row.task_id, 'processing', 10, '厂商任务已提交，正在等待视频生成…');
+      }
       await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, result.task_id, config);
       return;
     }

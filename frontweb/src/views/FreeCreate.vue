@@ -165,12 +165,12 @@ const refImageDataUrl = ref(null)
 const refImageLocalPath = ref(null)
 const refImageInput = ref(null)
 /** 与后端视频异步超时一致（分钟 → 毫秒） */
-const videoPollMaxMs = ref(30 * 60 * 1000)
+const videoPollMaxMs = ref(6 * 60 * 60 * 1000)
 
 onMounted(async () => {
   try {
     const res = await generationSettingsAPI.get()
-    const m = Math.max(1, Number(res?.video_generation_timeout_minutes) || 30)
+    const m = Math.max(1, Number(res?.video_generation_timeout_minutes) || 360)
     videoPollMaxMs.value = m * 60 * 1000
   } catch (_) {}
 })

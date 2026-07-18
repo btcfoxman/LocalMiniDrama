@@ -4381,7 +4381,8 @@ async function pollVideoTask(
   taskId,
   config,
   maxAttempts = DEFAULT_VIDEO_POLL_MAX_ATTEMPTS,
-  intervalMs = DEFAULT_VIDEO_POLL_INTERVAL_MS
+  intervalMs = DEFAULT_VIDEO_POLL_INTERVAL_MS,
+  pollOptions = {}
 ) {
   const provider = (config.provider || '').toLowerCase();
   const originalProtocol = resolveVideoProtocol(config);
@@ -4399,6 +4400,9 @@ async function pollVideoTask(
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
+  const deadlineMs = Number(pollOptions?.deadlineMs);
+  const hasDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0;
+  const onHeartbeat = typeof pollOptions?.onHeartbeat === 'function' ? pollOptions.onHeartbeat : null;
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -4419,7 +4423,18 @@ async function pollVideoTask(
   const queryUrl = () => buildQueryUrl(pollConfig, taskId);
   log.info('[poll] ????', { video_gen_id: videoGenId, task_id: taskId, protocol, poll_url: queryUrl() });
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+    if (hasDeadline && Date.now() >= deadlineMs) break;
+    if (onHeartbeat) {
+      try {
+        await onHeartbeat({ attempt: attempt + 1, maxAttempts, deadlineMs: hasDeadline ? deadlineMs : null });
+      } catch (heartbeatErr) {
+        log.warn('Video poll heartbeat failed', { video_gen_id: videoGenId, error: heartbeatErr.message });
+      }
+    }
+    const remainingBeforeWait = hasDeadline ? Math.max(0, deadlineMs - Date.now()) : intervalMs;
+    const waitMs = hasDeadline ? Math.min(intervalMs, remainingBeforeWait) : intervalMs;
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    if (hasDeadline && Date.now() >= deadlineMs) break;
     try {
       let url, headers;
       if (isKling) {
@@ -4707,7 +4722,7 @@ async function pollVideoTask(
       log.warn('Video poll request failed', { attempt, error: e.message });
     }
   }
-  return { error: '??????' };
+  return { error: pollOptions?.timeoutError || '视频生成任务轮询超时' };
 }
 
 module.exports = {

@@ -149,6 +149,19 @@ function ensureBackendCwd(backendCwd) {
         userCfg.storage = { ...bundledCfg.storage, user_customized: false };
         changed = true;
       }
+      // 视频任务有效期是客户端恢复协议的一部分，升级时同步新默认值，
+      // 避免旧安装仍使用早期 30 分钟配置。保留 video 下的其他用户配置。
+      const bundledVideoTimeout = bundledCfg.video?.generation_timeout_minutes;
+      if (
+        bundledVideoTimeout !== undefined
+        && userCfg.video?.generation_timeout_minutes !== bundledVideoTimeout
+      ) {
+        userCfg.video = {
+          ...(userCfg.video || {}),
+          generation_timeout_minutes: bundledVideoTimeout,
+        };
+        changed = true;
+      }
       if (changed) {
         fs.writeFileSync(configPath, yaml.dump(userCfg, { lineWidth: -1 }), 'utf8');
       }
