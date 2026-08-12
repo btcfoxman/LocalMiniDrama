@@ -51,5 +51,9 @@ test('preserves existing universal video capability checks', () => {
   assert.equal(canUseUniversalOmniVideoApi({
     api_protocol: 'volcengine_omni',
     default_model: 'doubao-seedance-1-5-pro-251215',
-  }), false)
+  }), true)
+  assert.equal(canUseUniversalOmniVideoApi({
+    api_protocol: 'volcengine_omni',
+    default_model: 'mingiz-sd2',
+  }), true)
 })

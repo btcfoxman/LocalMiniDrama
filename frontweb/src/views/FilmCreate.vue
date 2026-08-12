@@ -382,6 +382,7 @@
           </el-select>
           <StylePickerButton
             v-model="generationStyle"
+            v-model:custom-prompt="customStylePrompt"
             :options="generationStyleOptions"
             @change="() => saveProjectSettings(true)"
           />
@@ -2672,6 +2673,7 @@ import {
   getStylePromptZh,
   stylePromptMetadataForSave,
   backfillDramaStylePromptMetadataIfNeeded,
+  CUSTOM_STYLE_VALUE,
 } from '@/constants/styleOptions'
 import { useNavigation } from '@/composables/filmCreate/useNavigation'
 import { runGenerateStoryFromPremise } from '@/composables/useStoryGeneration'
@@ -2746,6 +2748,7 @@ const isStoryGenRunning = computed(() => {
   )
 })
 const generationStyle = ref('')
+const customStylePrompt = ref('')
 const projectAspectRatio = ref('16:9')
 const videoClipDuration = ref(5)
 
@@ -2759,10 +2762,15 @@ function _findStyleOption(val) {
 }
 
 /** 传给图像/视频 AI 用的英文 prompt（效果最好）；
- *  找不到 promptEn 时降级到 prompt，再降级到原始值 */
+ *  找不到 promptEn 时降级到 prompt，再降级到原始值；
+ *  custom 时返回用户填写的自定义描述，避免把字面量 "custom" 写入提示词 */
 function getSelectedStylePrompt() {
   const val = (generationStyle.value || '').toString().trim()
   if (!val) return undefined
+  if (val === CUSTOM_STYLE_VALUE) {
+    const text = (customStylePrompt.value || '').toString().trim()
+    return text || undefined
+  }
   const opt = _findStyleOption(val)
   if (opt) return opt.promptEn || opt.prompt || val
   return val
@@ -2772,13 +2780,17 @@ function getSelectedStylePrompt() {
 function getSelectedStylePromptZh() {
   const val = (generationStyle.value || '').toString().trim()
   if (!val) return undefined
+  if (val === CUSTOM_STYLE_VALUE) {
+    const text = (customStylePrompt.value || '').toString().trim()
+    return text || undefined
+  }
   const opt = _findStyleOption(val)
   if (opt) return opt.prompt || opt.promptEn || val
   return val
 }
 
 function projectStylePromptMetadata() {
-  return stylePromptMetadataForSave(generationStyle.value)
+  return stylePromptMetadataForSave(generationStyle.value, customStylePrompt.value)
 }
 
 const scriptContent = computed({
@@ -4653,6 +4665,11 @@ async function loadDrama() {
     storyStyle.value = (d.metadata && d.metadata.story_style) ? d.metadata.story_style : ''
     storyType.value = d.genre || ''
     generationStyle.value = d.style || ''
+    if ((d.style || '') === CUSTOM_STYLE_VALUE) {
+      customStylePrompt.value = (d.metadata?.style_prompt_zh || d.metadata?.style_prompt_en || '').toString()
+    } else {
+      customStylePrompt.value = ''
+    }
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
@@ -5080,6 +5097,7 @@ async function onGenerateStory() {
     storyEpisodeCount: storyEpisodeCount.value,
     scriptTitle: scriptTitle.value,
     generationStyle: generationStyle.value,
+    customStylePrompt: customStylePrompt.value,
     projectAspectRatio: projectAspectRatio.value,
     store,
     router,
@@ -8197,6 +8215,7 @@ function applyRouteToStore() {
     scriptLanguage.value = 'zh'
     scriptStoryboardStyle.value = ''
     generationStyle.value = ''
+    customStylePrompt.value = ''
   }
 }
 

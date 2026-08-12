@@ -8,9 +8,11 @@ export function videoModelNameFromAiConfig(config) {
 }
 
 export function isSeedance2VideoModel(modelName) {
-  const model = String(modelName || '').toLowerCase()
-  if (!model.includes('seedance')) return false
-  return /2[-_]0/.test(model) || /seedance[-_]?2|seedance2/.test(model)
+  const model = String(modelName || '').toLowerCase().trim()
+  if (!model) return false
+  if (/seedance[-_]?2|seedance2/.test(model)) return true
+  if (/2[-_]0[-_]/.test(model)) return true
+  return /(^|[-_./])sd2($|[-_./])/.test(model)
 }
 
 export function isHappyHorseReferenceVideoConfig(config) {
@@ -29,7 +31,8 @@ export function canUseUniversalOmniVideoApi(config) {
   const model = videoModelNameFromAiConfig(config).toLowerCase()
   if (isHappyHorseReferenceVideoConfig(config)) return true
   if (protocol === 'kling_omni') return true
-  if (protocol === 'volcengine_omni') return isSeedance2VideoModel(model)
+  // 显式选择全能协议即表示渠道支持多图，模型名可能是网关别名。
+  if (protocol === 'volcengine_omni') return true
   if (protocol === 'agnes' || provider === 'agnes' || /agnes-video/.test(model)) return true
   return false
 }

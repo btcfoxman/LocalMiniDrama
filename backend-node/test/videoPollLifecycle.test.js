@@ -73,4 +73,48 @@ describe('video provider polling lifecycle', () => {
     assert.equal(result.error, 'expired');
     assert.equal(heartbeatCount, 0);
   });
+
+  it('keeps the six-hour heartbeat contract while Agnes waits for a delayed result URL', async () => {
+    const originalFetch = global.fetch;
+    let fetchCount = 0;
+    let heartbeatCount = 0;
+    global.fetch = async () => {
+      fetchCount += 1;
+      const body = fetchCount === 1
+        ? { status: 'completed', metadata: {} }
+        : { status: 'completed', metadata: { url: 'https://cdn.example.test/final.mp4' } };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+      };
+    };
+
+    try {
+      const result = await pollVideoTask(
+        null,
+        silentLog,
+        8,
+        'agnes-task',
+        {
+          provider: 'agnes',
+          api_protocol: 'agnes',
+          base_url: 'https://agnes.example.test/v1',
+          api_key: 'test-key',
+        },
+        2,
+        1,
+        {
+          deadlineMs: Date.now() + 10_000,
+          timeoutError: 'expired',
+          onHeartbeat: () => { heartbeatCount += 1; },
+        }
+      );
+      assert.deepEqual(result, { video_url: 'https://cdn.example.test/final.mp4' });
+      assert.equal(fetchCount, 2);
+      assert.equal(heartbeatCount, 2);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
