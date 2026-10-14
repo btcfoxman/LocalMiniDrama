@@ -68,6 +68,7 @@ function createScene(db, log, dramaId, req) {
       req.location || '',
       req.time || '',
       req.prompt || '',
+      req.negative_prompt ?? null,
       req.image_url ?? null,
       req.local_path ?? null,
       req.ref_image ?? null,
