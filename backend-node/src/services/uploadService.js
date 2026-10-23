@@ -263,7 +263,7 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
 }
 
 /**
- * 将图片 Buffer 上传到中转图床，返回公开访问 URL。
+ * 将素材 Buffer 上传到临时文件图床，返回公开访问 URL（格式支持取决于中转服务）。
  * 接口：POST https://imageproxy.zhongzhuan.chat/api/upload  (multipart/form-data, field: file)
  * 响应：{ url: "https://imageproxy.zhongzhuan.chat/api/proxy/image/<hash>", created: ... }
  * 失败自动重试；成功返回 string URL，全部失败返回 null。
@@ -284,8 +284,13 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride
   }
   const timeoutMs = Math.max(5000, Number(proxy.upload_timeout_seconds) * 1000);
   const maxAttempts = Math.max(1, Math.min(5, Number(proxy.upload_max_attempts)));
-  const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
-  const ext = extMap[mimeType] || 'jpg';
+  const extMap = {
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+    'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg',
+    'audio/aac': 'aac', 'audio/flac': 'flac',
+  };
+  const ext = extMap[mimeType] || 'bin';
   const filename = `ref_${Date.now()}.${ext}`;
   log.info('[图床上传] ▶ 开始', {
     tag,
@@ -319,7 +324,7 @@ async function uploadToImageProxy(imageBuffer, mimeType, log, tag, proxyOverride
         return null;
       }
       const data = JSON.parse(raw);
-      const url = data?.url || null;
+      const url = typeof data?.url === 'string' && /^https?:\/\//i.test(data.url.trim()) ? data.url.trim() : null;
       if (url) { log.info('[图床上传] ✓ 成功', { tag, attempt, url, ms }); return url; }
       log.warn('[图床上传] 响应无 url 字段', { tag, attempt, ms, raw: raw.slice(0, 200) });
       if (attempt < maxAttempts) continue;

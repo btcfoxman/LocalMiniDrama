@@ -10,7 +10,7 @@
 
 > 遇到问题或有功能建议，欢迎在 [GitHub Issues](https://github.com/xuanyustudio/LocalMiniDrama/issues) 或 [Gitee Issues](https://gitee.com/bi_shang_a/localminidrama/issues) 提交反馈。
 
-> **本包版本：** `1.2.27`（与前端与桌面 `package.json` 对齐）
+> **本包版本：** `1.2.28`（与前端与桌面 `package.json` 对齐）
 
 ---
 
@@ -152,6 +152,13 @@ style:
 ```
 
 > AI 服务配置（API Key、模型名、端点 URL）通过前端「AI 配置」页面管理，存储于数据库 `ai_service_configs` 表，无需手动编辑 YAML。
+
+### 素材链接与重复使用
+
+- 图片、首尾帧和音色参考提交生成前，会按原 URL 查找已保存的 `local_path`，优先复用本地副本，避免依赖生成平台的临时下载链接。
+- 本地模式通过「存储设置」中的临时图床取得公网链接；S3 模式上传到当前对象存储。音频、视频要求图床支持对应格式，否则请使用 S3。
+- 图床缓存按文件内容和中转配置区分，使用前校验可访问性；链接提前失效会重新上传。已有 `asset://` 认证引用保留原样。
+- 支持内联图片的协议可回退 base64；Sora、即梦 multipart 接口优先直接读取本地图片。原链接失效且本地/S3 副本均不可用时，需重新上传素材。
 
 ---
 

@@ -4,10 +4,11 @@ const path = require('path');
 const crypto = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const uploadService = require('./uploadService');
+const { prepareImageReferences } = require('./mediaReferenceService');
+const { buildProxyCacheKey, getProxyCache, getProxyCacheValidated, deleteProxyCache, isProxyUrlAlive, setProxyCache } = require('./mediaProxyCache');
 const objectStorage = require('./objectStorageService');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
-const { loadConfig } = require('../config');
 const { postJSONWithTimeout } = require('./aiClient');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
@@ -74,13 +75,8 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
-  try { _appConfig = loadConfig(); } catch (_) { if (!_appConfig) _appConfig = {}; }
+  try { _appConfig = require('../config').loadConfig(); } catch (_) { if (!_appConfig) _appConfig = {}; }
   return _appConfig;
-}
-
-/** 从配置读取图床 URL 有效期（小时），默认 23h 留出余量 */
-function getProxyExpireHours() {
-  return Number(getAppConfig()?.image_proxy?.expire_hours ?? 23);
 }
 
 /**
@@ -1035,8 +1031,8 @@ async function dataImageRefToProxyUrl(value, log, db, tag) {
     return null;
   }
   if (!buffer.length) return null;
-  const cacheKey = buildCacheKey(raw, buffer);
-  const cached = db ? getProxyCache(db, cacheKey) : null;
+  const cacheKey = buildProxyCacheKey(buffer, mimeType);
+  const cached = db ? await getProxyCacheValidated(db, cacheKey, log, tag) : null;
   if (cached) return cached;
   const proxyUrl = await uploadService.uploadToImageProxy(buffer, mimeType, log, tag || 'image_ref_proxy');
   if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
@@ -1048,10 +1044,15 @@ async function localImageRefToProxyUrl(value, filesBaseUrl, storagePath, storage
   if (!raw || isDataImageUrl(raw)) return null;
   const relPath = relativePathFromImageRef(raw, filesBaseUrl, storage);
   if (!relPath && isHttpUrl(raw) && isExternallyReachableHttpUrl(raw)) return normalizeExternalHttpUrl(raw);
-  const cacheKey = relPath || `imageproxy:url:${crypto.createHash('sha256').update(raw).digest('hex').slice(0, 48)}`;
-  const cached = db ? getProxyCache(db, cacheKey) : null;
+  if (!relPath) return null;
+  const filePath = await uploadService.ensureLocalFile(storagePath, relPath, log);
+  if (!filePath) return null;
+  const buffer = await fs.promises.readFile(filePath);
+  const mimeType = mimeFromPathLike(relPath);
+  const cacheKey = buildProxyCacheKey(buffer, mimeType);
+  const cached = db ? await getProxyCacheValidated(db, cacheKey, log, tag) : null;
   if (cached) return cached;
-  const proxyUrl = await uploadService.uploadLocalImageToProxy(storagePath, relPath || raw, log, tag || 'image_ref_proxy');
+  const proxyUrl = await uploadService.uploadToImageProxy(buffer, mimeType, log, tag || 'image_ref_proxy');
   if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
   return proxyUrl || null;
 }
@@ -1084,7 +1085,7 @@ async function resolveImageRefForOpenAICompat(value, filesBaseUrl, storageLocalP
       } catch (e) {
         log?.warn?.('[image-ref] upload local reference to S3 failed', { key: relPath, error: e.message });
       }
-      const publicUrl = uploadedUrl || objectStorage.publicUrlForKey(storage, relPath);
+      const publicUrl = uploadedUrl;
       if (isExternallyReachableHttpUrl(publicUrl)) {
         const normalizedPublicUrl = normalizeExternalHttpUrl(publicUrl);
         log?.info?.('[image-ref] reference resolved as public S3 URL', {
@@ -1336,80 +1337,6 @@ async function callDashScopeImageApi(config, log, opts) {
 const { uploadToImageProxy } = require('./uploadService');
 
 /**
- * 从 image_proxy_cache 表查询已缓存的图床 URL。
- * cache_key 规则：本地相对路径 或 data URL 的 sha256 前 16 字符。
- * 若缓存已过期（超过 config.image_proxy.expire_hours），自动删除并返回 null，触发重新上传。
- */
-function getProxyCache(db, cacheKey) {
-  try {
-    const row = db.prepare('SELECT proxy_url, created_at FROM image_proxy_cache WHERE cache_key = ?').get(cacheKey);
-    if (!row?.proxy_url) return null;
-
-    const expireMs = getProxyExpireHours() * 3600 * 1000;
-    const createdAt = new Date(row.created_at).getTime();
-    if (isNaN(createdAt) || Date.now() - createdAt > expireMs) {
-      // 过期或时间无效：删除旧记录，返回 null 触发重新上传
-      deleteProxyCache(db, cacheKey);
-      return null;
-    }
-
-    return row.proxy_url;
-  } catch (_) { return null; }
-}
-
-function deleteProxyCache(db, cacheKey) {
-  try { db.prepare('DELETE FROM image_proxy_cache WHERE cache_key = ?').run(cacheKey); } catch (_) {}
-}
-
-/** 探测图床 URL 是否仍可访问（远端拉取失败时视为失效） */
-async function isProxyUrlAlive(url, timeoutMs = 8000) {
-  if (!url || !/^https?:\/\//i.test(url)) return false;
-  const opts = { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' };
-  try {
-    let res = await fetch(url, opts);
-    if (res.ok) return true;
-    if (res.status === 405 || res.status === 501) {
-      res = await fetch(url, {
-        method: 'GET',
-        headers: { Range: 'bytes=0-0' },
-        signal: AbortSignal.timeout(timeoutMs),
-        redirect: 'follow',
-      });
-    }
-    return res.ok || res.status === 206;
-  } catch (_) {
-    return false;
-  }
-}
-
-/**
- * 读取图床缓存并在使用前校验 URL 仍有效；404/超时等则删缓存并返回 null 以触发重新上传。
- */
-async function getProxyCacheValidated(db, cacheKey, log, tag) {
-  const url = getProxyCache(db, cacheKey);
-  if (!url) return null;
-  if (await isProxyUrlAlive(url)) return url;
-  deleteProxyCache(db, cacheKey);
-  log?.warn?.('[图床缓存] URL 已失效，将重新上传', { tag, cache_key: cacheKey, url_head: url.slice(0, 80) });
-  return null;
-}
-
-/** 写入 image_proxy_cache 缓存记录 */
-function setProxyCache(db, cacheKey, proxyUrl) {
-  try {
-    db.prepare(
-      'INSERT OR REPLACE INTO image_proxy_cache (cache_key, proxy_url, created_at) VALUES (?, ?, ?)'
-    ).run(cacheKey, proxyUrl, new Date().toISOString());
-  } catch (_) {}
-}
-
-/** 根据 ref 字符串计算缓存 key：本地路径直接使用；data URL 取 buffer sha256 前 16 字节的 hex */
-function buildCacheKey(ref, imageBuffer) {
-  if (!ref.startsWith('data:')) return ref;
-  return 'sha256:' + crypto.createHash('sha256').update(imageBuffer).digest('hex').slice(0, 32);
-}
-
-/**
  * 调用 Google Gemini 图片生成 API（generateContent 接口，返回 base64 inlineData）
  * 支持模型：gemini-2.5-flash-image / gemini-2.5-flash-image-preview /
  *          gemini-3.1-flash-image-preview / gemini-3-pro-image-preview 等
@@ -1440,7 +1367,8 @@ async function callGeminiImageApi(db, config, log, opts) {
   // image_proxy.use_for_gemini = true          → 上传图床后用 fileData.fileUri
   const globalCfg = (() => { try { return require('../config').loadConfig(); } catch (_) { return {}; } })();
   const imageProxyCfg = uploadService.loadImageProxyConfig(globalCfg?.image_proxy || {});
-  const useImageProxy = uploadService.isImageProxyEnabled(imageProxyCfg) && imageProxyCfg.use_for_gemini !== false;
+  const usePublicStorage = objectStorage.isS3Storage(globalCfg.storage);
+  const useImageProxy = !usePublicStorage && uploadService.isImageProxyEnabled(imageProxyCfg) && imageProxyCfg.use_for_gemini !== false;
   log.info('[Gemini图生] 参考图传输方式', { image_gen_id, use_image_proxy: useImageProxy });
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
@@ -1535,8 +1463,14 @@ async function callGeminiImageApi(db, config, log, opts) {
     }
 
     let imagePart;
-    if (useImageProxy) {
-      const cacheKey = buildCacheKey(ref, imageBuffer);
+    if (usePublicStorage) {
+      const data = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
+      const fileUri = await dataImageRefToPublicUrl(data, configuredStorageLocalPath(storage_local_path), log);
+      imagePart = fileUri
+        ? { fileData: { fileUri, mimeType } }
+        : { inlineData: { mimeType, data: imageBuffer.toString('base64') } };
+    } else if (useImageProxy) {
+      const cacheKey = buildProxyCacheKey(imageBuffer, mimeType, imageProxyCfg);
       let fileUri = await getProxyCacheValidated(db, cacheKey, log, `gemini_ig${image_gen_id}_ref${i}`);
       if (fileUri) {
         log.info('[Gemini图生] 参考图 缓存命中（图床）', { image_gen_id, ref_index: i });
@@ -1660,6 +1594,7 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
 async function callImageApi(db, log, opts) {
+  opts = await prepareImageReferences(db, log, opts);
   const {
     prompt,
     model: preferredModel,

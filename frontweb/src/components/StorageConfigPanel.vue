@@ -3,7 +3,7 @@
     <div class="storage-head">
       <div>
         <h3>存储设置</h3>
-        <p>本地模式不会上传到云端 S3。启用图片中转后，模型请求前会先把本地图片转成公网图链；中转不可用时再回退 base64。</p>
+        <p>复用素材时优先读取本地文件，并按设置通过临时图床或 S3 获取可供模型访问的链接，避免原下载链接过期。</p>
       </div>
       <div class="storage-state">
         <el-tag :type="isS3Mode ? 'warning' : 'success'" effect="plain">
@@ -19,8 +19,8 @@
       show-icon
       class="storage-alert"
       :title="isS3Mode
-        ? 'S3 模式会把上传图片、编辑后图片和生成结果同步到你填写的对象存储。'
-        : '打包版默认使用本地存储，S3 配置为空；图片中转默认开启，填写 Token 后会优先用中转外链请求模型。'"
+        ? 'S3 模式会同步素材和生成结果；再次使用本地素材时会上传到当前对象存储。'
+        : '本地模式保留素材文件；启用中转并配置 Token 后，提交生成任务前会获取素材外链。'"
     />
 
     <el-form label-position="top" class="storage-form">
@@ -47,8 +47,8 @@
         <div class="proxy-panel">
           <div class="proxy-row">
             <div>
-              <div class="proxy-title">本地图片中转</div>
-              <p>请求模型前先上传本地参考图，拿到公网链接后传给业务 API；上传失败时自动回退 base64。</p>
+              <div class="proxy-title">本地素材临时图床中转</div>
+              <p>提交前校验中转缓存，失效则重新上传。音频、视频需中转服务支持对应格式，也可使用 S3；支持内联图片的接口可回退 base64。</p>
             </div>
             <el-switch v-model="imageProxy.enabled" active-text="开启" inactive-text="关闭" />
           </div>

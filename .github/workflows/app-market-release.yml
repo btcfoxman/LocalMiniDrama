@@ -3,6 +3,14 @@ name: App Market Release
 on:
   workflow_dispatch:
     inputs:
+      platform:
+        description: Platforms to publish (tag pushes publish Windows only)
+        type: choice
+        default: windows
+        options:
+          - windows
+          - macos
+          - all
       channel:
         description: App market channel
         type: choice
@@ -45,6 +53,7 @@ permissions:
 jobs:
   windows:
     name: Publish Windows
+    if: github.event_name == 'push' || inputs.platform != 'macos'
     runs-on: windows-latest
     environment: production
 
@@ -166,6 +175,7 @@ jobs:
 
   macos:
     name: Publish macOS
+    if: github.event_name == 'workflow_dispatch' && (inputs.platform == 'macos' || inputs.platform == 'all')
     runs-on: macos-latest
     environment: production
 

@@ -6,6 +6,7 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const uploadService = require('./uploadService');
 const { uploadLocalImageToProxy, uploadToImageProxy } = uploadService;
 const imageClient = require('./imageClient');
+const { prepareVideoReferences } = require('./mediaReferenceService');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -240,7 +241,8 @@ function relPathFromVideoImageRef(rawUrl, filesBaseUrl) {
     }
     return '';
   }
-  let rel = decodeUriPathForSd2Match(raw.replace(/^\/+/, ''));
+  let rel = raw.replace(/^\/+/, '');
+  try { rel = decodeURIComponent(rel); } catch (_) { /* 保留未编码路径。 */ }
   if (rel.toLowerCase().startsWith('static/')) rel = rel.slice(7);
   return normalizeStorageRelativePath(rel);
 }
@@ -523,7 +525,7 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
     const proxyUrl = await uploadDataImageToProxyForVideo(raw, log, `kling_omni_vg${video_gen_id}_${index}`);
     return proxyUrl || raw;
   }
-  if (raw.startsWith('asset://')) return raw;
+  if (raw.startsWith('asset://') || raw.startsWith('tos://')) return raw;
 
   const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
     raw,
@@ -578,7 +580,7 @@ async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_p
     }
     return raw;
   }
-  if (raw.startsWith('asset://')) return raw;
+  if (raw.startsWith('asset://') || raw.startsWith('tos://')) return raw;
 
   const publicStorageUrl = await resolveVideoImageToPublicStorageUrl(
     raw,
@@ -925,7 +927,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     model: finalModel,
     ratio,
     duration: effectiveDuration,
-    resolution: effectiveResolution || '(默认)',
+    resolution: body.resolution || '(默认)',
     image_count: urls.length,
     image_url_types: body.content
       .filter((p) => p.type === 'image_url')
@@ -935,7 +937,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
     image_url_heads: body.content
       .filter((p) => p.type === 'image_url')
       .map((p) => String(p.image_url?.url || '').startsWith('data:') ? '(base64)' : String(p.image_url?.url || '').slice(0, 140)),
-    asset_ref_count: volcOmniAssetRefCount,
+    asset_ref_count: body.content.filter(part => part.type === 'image_url' && isVolcOfficialStorageImageRef(part.image_url?.url)).length,
     native_seedance_endpoint: volcNativeRequest,
     image_reference_policy: imagePolicy,
     video_gen_id,
@@ -2711,14 +2713,7 @@ async function resolveVeo3ImageForApi(rawImgUrl, storage_local_path, log, video_
   const raw = (rawImgUrl || '').trim();
   if (!raw) return null;
   const tag = `videoref_${video_gen_id || '0'}`;
-  try {
-    const host = new URL(raw).hostname.toLowerCase();
-    if (host.includes('imageproxy.zhongzhuan.chat')) {
-      return { kind: 'url', value: raw };
-    }
-  } catch (_) {
-    /* 非绝对 URL */
-  }
+  if (isExternallyReachableHttpUrl(raw)) return { kind: 'url', value: normalizeExternalHttpUrl(raw) };
 
   if (!allowRemoteReferenceUpload() && !allowImageProxyReferenceUpload()) {
     const resolved = resolveImageInputForOmniLocalBase64(raw, '', storage_local_path, log, video_gen_id);
@@ -3981,24 +3976,7 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
 async function callVideoApi(db, log, opts) {
-  const {
-    prompt,
-    model: preferredModel,
-    duration,
-    aspect_ratio,
-    resolution,
-    seed,
-    camera_fixed,
-    watermark,
-    image_url,
-    first_frame_url,
-    last_frame_url,
-    first_frame_local_path,
-    last_frame_local_path,
-    files_base_url,
-    storage_local_path,
-    video_gen_id
-  } = opts;
+  const preferredModel = opts.model;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {
     throw new Error('???????????AI ?????? video ?????????');
@@ -4046,21 +4024,35 @@ async function callVideoApi(db, log, opts) {
       if (chosen) {
         opts.voice_reference_url = chosen;
         log.info('[视频][SD2][全能] 自动为 Seedance 2.0 注入角色音色参考（来自角色 seedance2_voice_asset）', {
-          video_gen_id,
+          video_gen_id: opts.video_gen_id,
           storyboard_id: opts.storyboard_id,
           voice_ref_url: String(chosen).slice(0, 100)
         });
       } else {
         log.info('[视频][SD2][全能] 检测到活跃音色参考但未匹配到当前分镜角色', {
-          video_gen_id,
+          video_gen_id: opts.video_gen_id,
           storyboard_id: opts.storyboard_id,
           available_voice_char_ids: Array.from(voiceMap.keys())
         });
       }
     } else {
-      log.info('[视频][SD2][全能] Seedance 2.0 模型但本剧暂无 active 音色参考', { video_gen_id, drama_id: opts.drama_id });
+      log.info('[视频][SD2][全能] Seedance 2.0 模型但本剧暂无 active 音色参考', { video_gen_id: opts.video_gen_id, drama_id: opts.drama_id });
     }
   }
+  const jimengUsesNativeEndpoint = protocol === 'jimeng_ai_api' && (
+    String(config.endpoint || '').toLowerCase().includes('/contents/generations/tasks') ||
+    /\/api\/v3(?:\/|$)/.test(String(config.base_url || '').toLowerCase())
+  );
+  opts = await prepareVideoReferences(db, log, opts, {
+    preferLocalImages: protocol === 'sora' || (protocol === 'jimeng_ai_api' && !jimengUsesNativeEndpoint),
+    preserveImageReference: (protocol === 'volcengine' || protocol === 'volcengine_omni') && volcImageReferencePolicy(config) === 'official_asset'
+      ? isVolcOfficialStorageImageRef : undefined,
+  });
+  const {
+    prompt, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
+    image_url, first_frame_url, last_frame_url, first_frame_local_path, last_frame_local_path,
+    files_base_url, storage_local_path, video_gen_id,
+  } = opts;
   log.info('[视频] 路由协议', {
     video_gen_id,
     provider,
@@ -4071,12 +4063,7 @@ async function callVideoApi(db, log, opts) {
   });
 
   if (protocol === 'jimeng_ai_api') {
-    const endpointLower = String(config.endpoint || '').toLowerCase();
-    const baseLower = String(config.base_url || '').toLowerCase();
-    const looksLikeVolcNativeSeedance =
-      endpointLower.includes('/contents/generations/tasks') ||
-      /\/api\/v3(?:\/|$)/.test(baseLower);
-    if (looksLikeVolcNativeSeedance) {
+    if (jimengUsesNativeEndpoint) {
       log.warn('[视频] jimeng_ai_api 配置指向 Seedance 原生异步端口，自动改用 volcengine_omni 请求体', {
         video_gen_id: opts.video_gen_id,
         base_url: config.base_url,
