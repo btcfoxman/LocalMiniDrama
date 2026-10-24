@@ -2662,7 +2662,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoModelCapabilities'
-import { normalizeMediaUrl } from '@/utils/mediaUrl'
+import { assetImageUrl as normalizedAssetImageUrl, normalizeMediaUrl } from '@/utils/mediaUrl'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -3637,14 +3637,8 @@ function imageUrl(url) {
 /** 优先使用本地地址，避免远程图失效。item 为 { image_url, local_path } 或字符串 url */
 function assetImageUrl(item) {
   if (!item) return ''
-  if (typeof item === 'string') return imageUrl(item)
-  const localPath = item.local_path && String(item.local_path).trim()
-  if (localPath) {
-    const p = localPath.replace(/^\//, '')
-    return '/static/' + p
-  }
-  if (item.image_url) return imageUrl(item.image_url)
-  return ''
+  if (typeof item === 'string') return normalizeMediaUrl(item)
+  return normalizedAssetImageUrl(item)
 }
 function hasAssetImage(item) {
   if (!item) return false
@@ -6201,7 +6195,7 @@ async function getMainImageUrlForVideo(sb) {
 function toAbsoluteImageUrl(url) {
   if (!url || !String(url).trim()) return ''
   const s = String(url).trim()
-  if (s.startsWith('http://') || s.startsWith('https://')) return s
+  if (/^[a-z][a-z\d+.-]*:/i.test(s) || s.startsWith('//')) return s
   const base = (baseUrl.value || '').replace(/\/$/, '') || (typeof window !== 'undefined' ? window.location.origin : '')
   return base ? base + (s.startsWith('/') ? s : '/' + s) : s
 }

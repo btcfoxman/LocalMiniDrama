@@ -10,7 +10,7 @@
 
 > 遇到问题或有功能建议，欢迎在 [GitHub Issues](https://github.com/xuanyustudio/LocalMiniDrama/issues) 或 [Gitee Issues](https://gitee.com/bi_shang_a/localminidrama/issues) 提交反馈。
 
-> **本包版本：** `1.2.28`（与前端与桌面 `package.json` 对齐）
+> **本包版本：** `1.2.29`（与前端与桌面 `package.json` 对齐）
 
 ---
 
@@ -336,6 +336,8 @@ style:
 3. 前端轮询 `GET /images/:id` 直到 status=completed
 
 **支持的图片 API：**
+- OpenAI 兼容图片 / 分镜图：默认以 `background: true` 提交 `POST /v1/responses`，按返回的 `id` 轮询 `GET /v1/responses/{response_id}`。支持 `output[].type=image_generation_call` 中的 `url` 或 Base64 `result`，完成后沿用现有下载和保存流程。
+- 在「AI 配置」编辑对应的图片或分镜图配置，可关闭「异步生成」切回原有 `POST /images/generations` 同步接口。开关保存在该配置的 `settings.image_async`，未配置时默认为 `true`。火山、通义、Gemini、Agnes 等专用协议继续使用各自的调用方式。
 - DashScope（通义万象）：`POST /api/v1/services/aigc/text2image/image-synthesis`
 - Volcengine（豆包）：`POST /api/v3/images/generations`（OpenAI 兼容格式）
 

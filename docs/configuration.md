@@ -18,6 +18,7 @@
   - [配置示例](#配置示例-1)
 - [本地部署模型（Ollama 等）](#本地部署模型ollama-等)
 - [其他 OpenAI 兼容接口](#其他-openai-兼容接口)
+  - [图片异步生成开关](#图片异步生成开关)
 - [一键配置功能](#一键配置功能)
 - [连接测试](#连接测试)
 - [常见问题](#常见问题)
@@ -199,6 +200,17 @@ API Key：your-api-key
 ```
 
 常见兼容服务商：DeepSeek、硅基流动（SiliconFlow）、Groq、OpenRouter 等。
+
+### 图片异步生成开关
+
+在「AI 配置」中编辑 **文本生成图片** 或 **分镜图片生成** 配置，接口规范选 **OpenAI 兼容** 后，可以通过「异步生成」切换调用方式，默认开启。
+
+- **开启**：通过 `POST /v1/responses` 提交 `background: true` 的图片任务，再按返回的 `id` 查询 `GET /v1/responses/{response_id}`。参考图以 `input_image` 发送，生成比例取项目图片尺寸，质量默认 `high`。完成后自动保存本地文件。
+- **关闭**：使用原有的 `/images/generations` 同步图片接口，适用于只支持该接口的服务商。
+
+Base URL 可以填写 `https://your-api-endpoint` 或 `https://your-api-endpoint/v1`；异步端点会自动处理 `/v1` 前缀。使用 `gpt-image-2-2k` 等中转模型时，请保留服务商要求的完整模型名。提交和查询端点留空即可使用默认路径。
+
+开关按每条配置保存为 `settings.image_async`；没有保存过该字段的 OpenAI 兼容图片配置也默认使用异步。专用的火山、通义、Gemini 和 Agnes 图片协议使用各自原有流程。后台图片任务默认每 2 秒查询一次，最长等待 10 分钟；服务重启后仍需重新发起图片任务。
 
 ---
 

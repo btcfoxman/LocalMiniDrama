@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normalizeMediaUrl } from '../src/utils/mediaUrl.js'
+import { assetImageUrl, normalizeMediaUrl } from '../src/utils/mediaUrl.js'
 
 test('keeps an existing static media URL unchanged', () => {
   assert.equal(
@@ -31,4 +31,11 @@ test('keeps remote and browser-native media URLs unchanged', () => {
 test('returns an empty URL for missing values', () => {
   assert.equal(normalizeMediaUrl(null), '')
   assert.equal(normalizeMediaUrl('  '), '')
+})
+
+test('asset images preserve static paths and remote URLs stored as local_path', () => {
+  assert.equal(assetImageUrl({ local_path: '/static/images/frame.png' }), '/static/images/frame.png')
+  assert.equal(assetImageUrl({ local_path: 'static/images/frame.png' }), '/static/images/frame.png')
+  assert.equal(assetImageUrl({ local_path: 'images\\frame.png' }), '/static/images/frame.png')
+  assert.equal(assetImageUrl({ local_path: 'https://cdn.example.com/frame.png' }), 'https://cdn.example.com/frame.png')
 })

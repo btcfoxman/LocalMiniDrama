@@ -39,8 +39,10 @@ function setup(t) {
 }
 
 function addModel(db, type, protocol, baseUrl) {
-  db.prepare(`INSERT INTO ai_service_configs (service_type, provider, base_url, api_key, model, is_default, is_active, api_protocol)
-    VALUES (?, 'custom', ?, 'test-key', '["test-model"]', 1, 1, ?)`).run(type, baseUrl, protocol);
+  // 此处的 OpenAI 图片用例验证原有同步接口；Responses 异步流程有独立回归测试。
+  db.prepare(`INSERT INTO ai_service_configs (service_type, provider, base_url, api_key, model, is_default, is_active, api_protocol, settings)
+    VALUES (?, 'custom', ?, 'test-key', '["test-model"]', 1, 1, ?, ?)`).run(type, baseUrl, protocol,
+      type === 'image' && protocol === 'openai' ? JSON.stringify({ image_async: false }) : null);
 }
 
 async function modelServer(t, onRequest, responseBody) {
@@ -119,6 +121,49 @@ test('single image, first/last frames and repeated references use fresh relay UR
   assert.equal(prepared.last_frame_url, newUrl);
   assert.deepEqual(prepared.reference_urls, [newUrl, 'asset://certified']);
   assert.equal(uploads, 1);
+});
+
+test('repeat video submissions from a public app origin renew the saved local reference', async t => {
+  const { prepareVideoGenerationRequest } = await import('../../frontweb/src/utils/videoReferences.js');
+  const { assetImageUrl } = await import('../../frontweb/src/utils/mediaUrl.js');
+  const { root, db, write } = setup(t);
+  const relative = 'projects/剧集/images/frame.png';
+  write(relative);
+  addModel(db, 'video', 'openai', 'https://api.example.test');
+  const origin = 'https://drama.example.test';
+  const frame = origin + assetImageUrl({ local_path: '/static/' + relative });
+  const request = { image_url: frame, first_frame_url: frame, last_frame_url: frame, reference_image_urls: [frame] };
+  const uploads = [];
+  const submissions = [];
+  const probes = [];
+  t.mock.method(global, 'fetch', async (url, opts) => {
+    if (url === 'https://relay.example.test/upload') {
+      const renewed = `${newUrl}/${uploads.length + 1}`;
+      uploads.push(renewed);
+      return new Response(JSON.stringify({ url: renewed }));
+    }
+    if (opts.method === 'HEAD') {
+      probes.push(url);
+      assert.equal(url, uploads[0]);
+      return new Response('', { status: 404 });
+    }
+    assert.ok(url.startsWith('https://api.example.test/'));
+    submissions.push(JSON.parse(opts.body));
+    return new Response(JSON.stringify({ id: `task-${submissions.length}` }));
+  });
+  for (let i = 0; i < 2; i += 1) {
+    const prepared = prepareVideoGenerationRequest(request, origin);
+    const result = await videoClient.callVideoApi(db, log, {
+      ...prepared, reference_urls: prepared.reference_image_urls,
+      model: 'test-model', prompt: 'animate', storage_local_path: root,
+    });
+    assert.equal(result.task_id, `task-${i + 1}`);
+    assert.ok(JSON.stringify(submissions[i]).includes(uploads[i]));
+    assert.ok(!JSON.stringify(submissions[i]).includes(origin));
+  }
+  assert.deepEqual(uploads, [`${newUrl}/1`, `${newUrl}/2`]);
+  assert.deepEqual(probes, [uploads[0]]);
+  assert.equal(request.image_url, frame);
 });
 
 test('dead relay cache is refreshed even before its configured expiry', async t => {
@@ -279,6 +324,31 @@ test('image submission renews a dead relay cache using the saved reference image
   });
   assert.equal(result.image_url, 'https://output.example.test/image.png');
   assert.deepEqual(submitted.image, [newUrl]);
+});
+
+test('Responses image generation renews expired local references before constructing input_image content', async t => {
+  const { root, db, cfg, write } = setup(t);
+  const bytes = write('images/frame.png');
+  db.prepare('INSERT INTO image_generations (image_url, local_path) VALUES (?, ?)').run(expiredUrl, 'images/frame.png');
+  cache.setProxyCache(db, cache.buildProxyCacheKey(bytes, 'image/png', cfg.image_proxy), 'https://files.example.test/deleted');
+  let submitted;
+  const base = await modelServer(t, body => { submitted = body; }, {
+    status: 'completed', output: [{ type: 'image_generation_call', status: 'completed', url: 'https://output.example.test/image.png' }],
+  });
+  addModel(db, 'image', 'openai', base);
+  db.prepare("UPDATE ai_service_configs SET settings = NULL WHERE service_type = 'image'").run();
+  t.mock.method(global, 'fetch', async (url, opts) => {
+    if (opts.method === 'HEAD') return new Response('', { status: 404 });
+    assert.equal(url, 'https://relay.example.test/upload');
+    return new Response(JSON.stringify({ url: newUrl }));
+  });
+  const result = await imageClient.callImageApi(db, log, {
+    model: 'test-model', prompt: 'redraw', size: '1440x2560', storage_local_path: root, reference_image_urls: [expiredUrl],
+  });
+  assert.equal(result.image_url, 'https://output.example.test/image.png');
+  assert.deepEqual(submitted.input[0].content[1], { type: 'input_image', image_url: newUrl, detail: 'auto' });
+  assert.equal(submitted.background, true);
+  assert.deepEqual(submitted.tools, [{ type: 'image_generation', ratio: '9:16', quality: 'high' }]);
 });
 
 test('Sora multipart reads the saved image without an unnecessary relay upload', async t => {

@@ -10,6 +10,7 @@ const objectStorage = require('./objectStorageService');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { postJSONWithTimeout } = require('./aiClient');
+const { callResponsesImageApi } = require('./responsesImageClient');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
@@ -134,6 +135,9 @@ function buildImageUrl(config) {
   const base = (config.base_url || '').replace(/\/$/, '');
   let ep = config.endpoint || '/images/generations';
   if (!ep.startsWith('/')) ep = '/' + ep;
+  if (/^\/(?:v1\/)?responses\/?$/i.test(ep)) {
+    ep = /\/v1$/i.test(base) ? '/images/generations' : '/v1/images/generations';
+  }
   return base + ep;
 }
 
@@ -1730,6 +1734,25 @@ async function callImageApi(db, log, opts) {
   else if (isAgnes && size) effectiveSize = fixAgnesImageSize(size);
   const configSettings = parseConfigSettings(config);
   const effectiveQuality = quality || configSettings.quality;
+
+  if (protocol === 'openai' && !isSeedream && !isAgnes && ![false, 0, 'false'].includes(configSettings.image_async)) {
+    let taskId = opts.task_id;
+    if (!taskId && image_gen_id) {
+      taskId = db.prepare('SELECT task_id FROM image_generations WHERE id = ?').get(image_gen_id)?.task_id;
+    }
+    return callResponsesImageApi(config, log, {
+      prompt: effectivePrompt, model, size, quality: effectiveQuality, aspect_ratio: opts.aspect_ratio,
+      image_gen_id, reference_image_urls: resolvedRefs, negative_prompt: mergedNegativePrompt,
+      onProgress: () => {
+        if (taskId && !taskService.touchTask(db, taskId, '图片后台生成中，正在查询结果…')) return false;
+        if (image_gen_id) {
+          db.prepare("UPDATE image_generations SET updated_at = ? WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL")
+            .run(new Date().toISOString(), image_gen_id);
+        }
+        return true;
+      },
+    });
+  }
 
   const body = {
     model,

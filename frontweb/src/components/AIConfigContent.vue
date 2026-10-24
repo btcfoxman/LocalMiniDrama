@@ -346,6 +346,11 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item v-if="showImageAsyncSwitch" label="异步生成">
+          <el-switch v-model="form.image_async" active-text="异步" inactive-text="同步" />
+          <p class="field-tip">默认开启。后台生成完成后自动保存图片；关闭后使用同步图片接口。需服务商支持所选模式。</p>
+        </el-form-item>
+
         <!-- 接口规范帮助 Dialog -->
         <el-dialog v-model="showProtocolHelp" title="接口规范说明" width="700px" top="5vh">
           <div class="protocol-help">
@@ -355,8 +360,10 @@
                 <template #title><span class="ph-tag ph-tag-img">图片</span> OpenAI 兼容 — 绝大多数中转站默认</template>
                 <div class="ph-body">
                   <b>适用场景：</b>OpenAI 官方、各类中转/代理站（ChatFire、硅基流动等）<br>
-                  <b>Endpoint：</b><code>POST /v1/images/generations</code><br>
-                  <pre>{ "model": "dall-e-3", "prompt": "...", "n": 1, "size": "1024x1024" }</pre>
+                  <b>异步模式（默认）：</b><code>POST /v1/responses</code>，随后通过 <code>GET /v1/responses/{response_id}</code> 查询结果。<br>
+                  <b>同步模式：</b><code>POST /v1/images/generations</code>；关闭「异步生成」开关即可切换。<br>
+                  <b>异步请求示例：</b>
+                  <pre>{ "model": "gpt-image-2-2k", "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "..." }] }], "stream": false, "tools": [{ "type": "image_generation", "ratio": "9:16", "quality": "high" }], "background": true }</pre>
                 </div>
               </el-collapse-item>
               <el-collapse-item name="volcengine-img">
@@ -720,7 +727,7 @@ input_reference = (图片文件，可选)</pre>
                 <el-tooltip placement="top" popper-class="cfg-tip-popper">
                   <template #content>
                     <div class="cfg-tip-content">
-                      查询任务状态的接口路径，{taskId} 会被替换为实际任务 ID。<br>
+                      查询任务状态的接口路径，{taskId} 或 {response_id} 会被替换为实际任务 ID。<br>
                       <b>预设厂商</b>留空即可，由系统自动推断。<br>
                       <b>视频自定义厂商</b>必须填写，如 /v1/video/tasks/{taskId}<br>
                       <b>图片/NanoBanana</b> 代理若不支持轮询可留空
@@ -730,7 +737,7 @@ input_reference = (图片文件，可选)</pre>
                 </el-tooltip>
               </span>
             </template>
-            <el-input v-model="form.query_endpoint" placeholder="自定义视频厂商必填，如 /v1/video/tasks/{taskId}；预设厂商留空" />
+            <el-input v-model="form.query_endpoint" :placeholder="showImageAsyncSwitch && form.image_async ? '留空自动使用 /v1/responses/{response_id}' : '自定义视频厂商必填，如 /v1/video/tasks/{taskId}；预设厂商留空'" />
           </el-form-item>
         </template>
 
@@ -1164,6 +1171,7 @@ import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import StorageConfigPanel from '@/components/StorageConfigPanel.vue'
+import { buildImageGenerationSettings, isAsyncImageGeneration, responsesImageEndpointPreview } from '@/utils/imageGenerationSettings'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1244,6 +1252,7 @@ const form = ref({
   query_endpoint: '',
   modelText: '',
   default_model: '',
+  image_async: true,
   deepseek_thinking: 'disabled',
   deepseek_reasoning_effort: 'high',
   priority: 0,
@@ -1536,6 +1545,17 @@ const isDeepSeekOfficialForm = computed(() => (
   && isDeepSeekOfficial(form.value.provider, form.value.base_url)
 ))
 
+const showImageAsyncSwitch = computed(() => {
+  const { service_type, api_protocol, provider, base_url, default_model } = form.value
+  if (!['image', 'storyboard_image'].includes(service_type)) return false
+  const p = String(provider || '').toLowerCase()
+  const protocol = String(api_protocol || providerProtocolMap[p] || 'openai').toLowerCase()
+  return protocol === 'openai'
+    && p !== 'agnes'
+    && !/agnes-image|seedream|doubao/i.test(default_model || '')
+    && !/apihub\.agnes-ai\.com/i.test(base_url || '')
+})
+
 /** 当前服务类型下的预设厂商列表（编辑时若当前 provider 不在列表则补一项；末尾始终附一项自定义入口） */
 const availableProviderOptions = computed(() => {
   const st = form.value.service_type || 'text'
@@ -1589,8 +1609,13 @@ const endpointPreviewInfo = computed(() => {
       submitPath = endpoint || '/tts'
     }
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
+    if (showImageAsyncSwitch.value && form.value.image_async) {
+      return responsesImageEndpointPreview(base, endpoint, query_endpoint)
+    }
     if (endpoint) {
-      submitPath = endpoint
+      submitPath = /^\/?(?:v1\/)?responses\/?$/i.test(endpoint)
+        ? (/\/v1$/i.test(base) ? '/images/generations' : '/v1/images/generations')
+        : endpoint
     } else if (proto === 'volcengine' || p === 'volcengine' || p === 'volces') {
       submitPath = '/images/generations'
     } else if (proto === 'dashscope' || p === 'dashscope' || p === 'qwen_image') {
@@ -1887,6 +1912,7 @@ function resetForm() {
     query_endpoint: '',
     modelText: '',
     default_model: '',
+    image_async: true,
     deepseek_thinking: 'disabled',
     deepseek_reasoning_effort: 'high',
     priority: 0,
@@ -1942,6 +1968,7 @@ function openEdit(row) {
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
     default_model: defaultInList ? row.default_model : (modelList[0] || ''),
+    image_async: isAsyncImageGeneration(row.settings),
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
@@ -1966,9 +1993,12 @@ async function submit() {
     const defaultModel = form.value.default_model && modelList.includes(form.value.default_model)
       ? form.value.default_model
       : modelList[0] || null
-    // TTS / 可灵 Omni 官方 AKSK / DeepSeek V4 参数打包进 settings
+    // 各协议的专属参数打包进 settings，保留已有的其他参数。
     let settings = undefined
-    if (form.value.service_type === 'tts') {
+    if (showImageAsyncSwitch.value) {
+      const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
+      settings = JSON.stringify(buildImageGenerationSettings(prev?.settings, form.value.image_async))
+    } else if (form.value.service_type === 'tts') {
       const s = {}
       if (form.value.voice_id) s.voice_id = form.value.voice_id
       if (form.value.group_id) s.group_id = form.value.group_id
