@@ -23,7 +23,8 @@ function createApp() {
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
-  const { recoverImageCaches, imageCacheRoots } = require('./services/imageCacheRecovery');
+  const { recoverImageCaches } = require('./services/imageCacheRecovery');
+  const { createStaticMediaMiddleware } = require('./services/staticMediaService');
   setImmediate(() => {
     recoverImageCaches(db, config, log).catch(e => log.warn('[图片缓存] 恢复未完成', { error: e.message }));
   });
@@ -53,10 +54,7 @@ function createApp() {
     : path.join(process.cwd(), 'data', 'storage');
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
-    app.use('/static', express.static(storageRoot));
-    for (const legacyRoot of imageCacheRoots(config).slice(1)) {
-      app.use('/static', express.static(legacyRoot));
-    }
+    app.use('/static', createStaticMediaMiddleware(config));
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);
   }

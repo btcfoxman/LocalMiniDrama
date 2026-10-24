@@ -80,11 +80,14 @@ function isPublicHttpUrl(value) {
   } catch (_) { return false; }
 }
 
-function safeLocalPath(storagePath, value) {
+function safeLocalPath(storagePath, value, decodeUrl = true) {
   if (!value || /^(?:https?:|data:|asset:)/i.test(value)) return null;
   try {
-    let raw = String(value).split(/[?#]/)[0];
-    try { raw = decodeURIComponent(raw); } catch (_) { /* 工程名可能包含未编码的 %。 */ }
+    let raw = String(value);
+    if (decodeUrl) {
+      raw = raw.split(/[?#]/)[0];
+      try { raw = decodeURIComponent(raw); } catch (_) { /* 工程名可能包含未编码的 %。 */ }
+    }
     raw = raw.replace(/\\/g, '/').replace(/^\/?static\//i, '');
     if (raw.includes('\0')) return null;
     const root = path.resolve(storagePath);
@@ -105,16 +108,30 @@ function createReferenceResolver(db, log, opts = {}) {
   const proxy = uploadService.loadImageProxyConfig(cfg.image_proxy || {});
   const memo = new Map();
   const transfers = new Map();
+  const roots = [...new Set([storagePath, ...imageCacheRoots(cfg)])];
 
   async function resolve(raw, kind, localPathHint, preferLocal) {
     if (!raw || /^(?:data:|asset:|tos:)/i.test(raw)) return raw;
-    const candidates = [...new Set([localPathHint, ...storedLocalPaths(db, raw), referenceRelativePath(raw, storage, opts.files_base_url)])]
-      .map(value => safeLocalPath(storagePath, value)).filter(Boolean);
+    const values = [localPathHint, ...storedLocalPaths(db, raw)].map(value => ({ value, decodeUrl: false }));
+    const relative = referenceRelativePath(raw, storage, opts.files_base_url);
+    // Filesystem paths and URL paths have different percent-encoding semantics.
+    // Prefer the exact stored path before interpreting a caller's URL.
+    const isUrlPath = /^https?:\/\//i.test(raw) || /^\/?static\//i.test(raw);
+    values.push({ value: relative, decodeUrl: isUrlPath }, { value: relative, decodeUrl: !isUrlPath });
+    const candidates = [];
+    const seen = new Set();
+    for (const { value, decodeUrl } of values) {
+      for (const root of roots) {
+        const source = safeLocalPath(root, value, decodeUrl);
+        const target = source && safeLocalPath(storagePath, source.relative, false);
+        if (target && !seen.has(target.relative)) { candidates.push(target); seen.add(target.relative); }
+      }
+    }
     let local = candidates.find(candidate => fs.existsSync(candidate.absolute) && fs.statSync(candidate.absolute).isFile());
     if (!local) {
       for (const candidate of candidates) {
-        for (const root of imageCacheRoots(cfg)) {
-          const legacy = safeLocalPath(root, candidate.relative);
+        for (const root of roots) {
+          const legacy = safeLocalPath(root, candidate.relative, false);
           if (!legacy || legacy.absolute === candidate.absolute) continue;
           try {
             const stat = await fs.promises.stat(legacy.absolute);
@@ -138,6 +155,7 @@ function createReferenceResolver(db, log, opts = {}) {
     }
     if (!local) {
       if (isPublicHttpUrl(raw) && await proxyCache.isProxyUrlAlive(raw)) return raw;
+      log?.warn?.('[素材读取] 未找到本地参考文件', { storage_root: storagePath, searched_roots: roots, relative_paths: candidates.map(item => item.relative), video_gen_id: opts.video_gen_id });
       throw new Error(`参考${kind === 'audio' ? '音频' : kind === 'video' ? '视频' : '图片'}链接已失效或本地文件不存在，请重新上传素材后重试`);
     }
     // 图生接口保留自己的压缩、inlineData 和 Gemini 中转偏好处理。

@@ -14,7 +14,7 @@ const log = { info() {}, warn() {}, error() {} };
 const model = 'gpt-image-2-2k';
 const imageUrl = 'https://download.example.test/images/local-algorithm/result';
 const done = { id: 'resp_image-1', status: 'completed', output: [{ type: 'image_generation_call', status: 'completed', result: null, url: imageUrl }] };
-const runtime = { pollIntervalMs: 1, timeoutMs: 1000 };
+const runtime = { pollIntervalMs: 1, timeoutMs: 1000, retryBaseDelayMs: 1 };
 
 async function serverFor(t, replies) {
   const requests = [];
@@ -23,8 +23,10 @@ async function serverFor(t, replies) {
     for await (const chunk of req) chunks.push(chunk);
     requests.push({ method: req.method, url: req.url, headers: req.headers, body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null });
     const reply = replies[Math.min(requests.length - 1, replies.length - 1)];
+    if (reply.closeSocket) { req.socket.destroy(); return; }
     res.statusCode = reply.httpStatus || 200;
     res.setHeader('Content-Type', 'application/json');
+    for (const [name, value] of Object.entries(reply.headers || {})) res.setHeader(name, value);
     res.end(typeof reply.raw === 'string' ? reply.raw : JSON.stringify(reply.data ?? reply));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -119,6 +121,88 @@ test('poll retries transient failures without creating another paid generation',
   assert.deepEqual(await callResponsesImageApi(cfg, log, { model }, runtime), { image_url: imageUrl });
   assert.equal(requests.filter(r => r.method === 'POST').length, 1);
   assert.equal(requests.filter(r => r.method === 'GET').length, 3);
+});
+
+test('submission retries gateway failures with a stable key and unchanged request, then only polls the accepted task', async t => {
+  const { cfg, requests } = await serverFor(t, [
+    { httpStatus: 502, data: { error: { message: '生成失败，请稍后重试~~' } } },
+    { httpStatus: 503, headers: { 'retry-after-ms': '1' }, data: { error: { message: 'busy' } } },
+    { id: 'resp_image-1', status: 'queued' }, done,
+  ]);
+  const progress = [];
+  assert.deepEqual(await callResponsesImageApi(cfg, log, { model: 'gpt-image-2', onProgress: p => { progress.push(p.status); } }, runtime), { image_url: imageUrl });
+  assert.deepEqual(requests.map(r => r.method), ['POST', 'POST', 'POST', 'GET']);
+  assert.ok(progress.includes('retry_wait'));
+  assert.ok(requests[0].headers['idempotency-key']);
+  for (const req of requests.slice(1, 3)) {
+    assert.equal(req.headers['idempotency-key'], requests[0].headers['idempotency-key']);
+    assert.equal(req.headers['x-client-request-id'], requests[0].headers['x-client-request-id']);
+    assert.deepEqual(req.body, requests[0].body);
+  }
+});
+
+test('gateway failure with an accepted response id resumes that response without resubmission', async t => {
+  const { cfg, requests } = await serverFor(t, [
+    { httpStatus: 502, data: { id: 'resp_image-1', status: 'queued', error: null } }, done,
+  ]);
+  assert.deepEqual(await callResponsesImageApi(cfg, log, { model }, runtime), { image_url: imageUrl });
+  assert.deepEqual(requests.map(r => [r.method, r.url]), [['POST', '/v1/responses'], ['GET', '/v1/responses/resp_image-1']]);
+});
+
+test('gateway retries stop at three attempts and retain the provider request id', async t => {
+  const { cfg, requests } = await serverFor(t, [
+    { httpStatus: 502, headers: { 'x-request-id': 'provider-request-123' }, data: { error: { message: '生成失败，请稍后重试~~' } } },
+  ]);
+  const result = await callResponsesImageApi(cfg, log, { model }, runtime);
+  assert.match(result.error, /502.*生成失败.*已尝试 3 次.*provider-request-123/);
+  assert.equal(requests.length, 3);
+});
+
+test('permanent errors, terminal tasks and uncertain timeouts never create another generation', async t => {
+  for (const reply of [
+    { httpStatus: 502, data: { id: 'resp_image-1', status: 'failed', error: { message: 'failed' } } },
+    { httpStatus: 502, data: { error: { code: 'insufficient_quota', message: 'no credits' } } },
+    { httpStatus: 502, data: { error: { message: '模型不支持此接口' } } },
+    { httpStatus: 502, headers: { 'x-should-retry': 'false' }, data: { error: { message: 'failed' } } },
+    { httpStatus: 504, raw: '<html>Gateway Timeout</html>' },
+    { httpStatus: 502, raw: '<html>Bad Gateway</html>' },
+    { httpStatus: 502, data: { metadata: { task_id: 'imgtask_accepted' }, error: { message: 'try again' } } },
+    { httpStatus: 401, data: { error: { message: 'invalid key' } } },
+  ]) {
+    const { cfg, requests } = await serverFor(t, [reply]);
+    assert.ok((await callResponsesImageApi(cfg, log, { model }, runtime)).error);
+    assert.equal(requests.length, 1);
+  }
+});
+
+test('retry waits respect provider delays, local cancellation and the total deadline', async t => {
+  await t.test('cancellation during retry wait', async t => {
+    const { cfg, requests } = await serverFor(t, [{ httpStatus: 502, raw: 'busy' }, done]);
+    const result = await callResponsesImageApi(cfg, log, { model, onProgress: p => p.status !== 'retry_wait' }, runtime);
+    assert.match(result.error, /已取消/);
+    assert.equal(requests.length, 1);
+  });
+  for (const headers of [{ 'retry-after': '120' }, { 'retry-after-ms': '120000' }, { 'retry-after': new Date(Date.now() + 120000).toUTCString() }]) {
+    const { cfg, requests } = await serverFor(t, [{ httpStatus: 503, headers, raw: 'busy' }, done]);
+    assert.match((await callResponsesImageApi(cfg, log, { model }, runtime)).error, /503/);
+    assert.equal(requests.length, 1);
+  }
+});
+
+test('a lost submission response is not automatically submitted again', async t => {
+  const { cfg, requests } = await serverFor(t, [{ closeSocket: true }, done]);
+  const result = await callResponsesImageApi(cfg, log, { model }, runtime);
+  assert.match(result.error, /未收到服务商确认.*未自动重新提交/);
+  assert.equal(requests.length, 1);
+});
+
+test('a submission cannot start after the overall deadline', async t => {
+  const { cfg, requests } = await serverFor(t, [done]);
+  const result = await callResponsesImageApi(cfg, log, {
+    model, onProgress: () => new Promise(resolve => setTimeout(resolve, 20)),
+  }, { ...runtime, timeoutMs: 10 });
+  assert.match(result.error, /提交超时/);
+  assert.equal(requests.length, 0);
 });
 
 test('a local cancellation while a completion is in flight prevents returning the image', async t => {

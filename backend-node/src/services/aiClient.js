@@ -59,7 +59,7 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
 /**
  * 图生等长耗时 JSON POST：使用 Node http(s) + 可配置超时（默认 10 分钟），
  * 避免 undici fetch 在慢链路或大包体（多参考图 base64）下长时间挂起后以模糊的 fetch failed 结束。
- * @returns {Promise<{ statusCode: number, raw: string }>}
+ * @returns {Promise<{ statusCode: number, raw: string, headers: object }>}
  */
 function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
@@ -85,7 +85,7 @@ function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
       res.on('end', () => {
         clearTimeout(timer);
         const raw = Buffer.concat(chunks).toString('utf-8');
-        resolve({ statusCode: res.statusCode || 0, raw });
+        resolve({ statusCode: res.statusCode || 0, raw, headers: res.headers });
       });
       res.on('error', (e) => {
         clearTimeout(timer);

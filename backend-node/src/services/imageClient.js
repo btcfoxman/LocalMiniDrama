@@ -1743,8 +1743,10 @@ async function callImageApi(db, log, opts) {
     return callResponsesImageApi(config, log, {
       prompt: effectivePrompt, model, size, quality: effectiveQuality, aspect_ratio: opts.aspect_ratio,
       image_gen_id, reference_image_urls: resolvedRefs, negative_prompt: mergedNegativePrompt,
-      onProgress: () => {
-        if (taskId && !taskService.touchTask(db, taskId, '图片后台生成中，正在查询结果…')) return false;
+      onProgress: (progress) => {
+        const message = progress.status === 'retry_wait' ? '图片服务暂时繁忙，等待后自动重试…'
+          : progress.status === 'submitting' ? '正在提交图片后台任务…' : '图片后台生成中，正在查询结果…';
+        if (taskId && !taskService.touchTask(db, taskId, message)) return false;
         if (image_gen_id) {
           db.prepare("UPDATE image_generations SET updated_at = ? WHERE id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL")
             .run(new Date().toISOString(), image_gen_id);

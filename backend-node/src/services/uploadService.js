@@ -78,9 +78,10 @@ function buildPublicUrl(localPath, baseUrl = '') {
   if (objectStorage.isS3Storage(storage)) {
     return objectStorage.publicUrlForKey(storage, cleanPath);
   }
+  const urlPath = cleanPath.split('/').map(encodeURIComponent).join('/');
   return baseUrl
-    ? `${baseUrl.replace(/\/$/, '')}/${cleanPath}`
-    : `/static/${cleanPath}`;
+    ? `${baseUrl.replace(/\/$/, '')}/${urlPath}`
+    : `/static/${urlPath}`;
 }
 
 /**

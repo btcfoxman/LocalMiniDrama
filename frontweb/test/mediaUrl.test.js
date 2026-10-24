@@ -33,6 +33,12 @@ test('returns an empty URL for missing values', () => {
   assert.equal(normalizeMediaUrl('  '), '')
 })
 
+test('filesystem paths escape literal URL characters without changing existing URL encoding', () => {
+  assert.equal(normalizeMediaUrl('projects/100%20done/images/frame.png'), '/static/projects/100%2520done/images/frame.png')
+  assert.equal(normalizeMediaUrl('images/one #two?.png'), '/static/images/one%20%23two%3F.png')
+  assert.equal(normalizeMediaUrl('/static/images/one%20two.png'), '/static/images/one%20two.png')
+})
+
 test('asset images preserve static paths and remote URLs stored as local_path', () => {
   assert.equal(assetImageUrl({ local_path: '/static/images/frame.png' }), '/static/images/frame.png')
   assert.equal(assetImageUrl({ local_path: 'static/images/frame.png' }), '/static/images/frame.png')

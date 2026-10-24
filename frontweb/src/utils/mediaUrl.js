@@ -12,7 +12,8 @@ export function normalizeMediaUrl(value) {
   const normalized = raw.replace(/\\/g, '/')
   if (normalized.startsWith('/static/')) return normalized
   if (normalized.startsWith('static/')) return '/' + normalized
-  return '/static/' + normalized.replace(/^\/+/, '')
+  // local_path is a filesystem path: a literal %20 must reach the server as %2520.
+  return '/static/' + normalized.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')
 }
 
 /** 统一媒体 URL：优先 local_path，其次 image_url / video_url */

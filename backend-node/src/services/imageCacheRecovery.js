@@ -5,6 +5,7 @@ const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 
 const IMAGE_COLUMNS = [
+  ['assets', 'url', 'local_path', 'uploads'],
   ['image_generations', 'image_url', 'local_path', 'images'],
   ['characters', 'image_url', 'local_path', 'characters'],
   ['scenes', 'image_url', 'local_path', 'scenes'],
@@ -59,7 +60,8 @@ async function recoverImageCaches(db, cfg, log, { cwd = process.cwd() } = {}) {
   for (const [table, urlColumn, pathColumn, defaultCategory] of IMAGE_COLUMNS) {
     let rows;
     try {
-      rows = db.prepare(`SELECT * FROM ${table} WHERE deleted_at IS NULL AND ${urlColumn} IS NOT NULL AND ${urlColumn} != ''`).all();
+      rows = db.prepare(`SELECT * FROM ${table} WHERE deleted_at IS NULL AND
+        (COALESCE(${urlColumn}, '') != '' OR COALESCE(${pathColumn}, '') != '')${table === 'assets' ? " AND type = 'image'" : ''}`).all();
     } catch (_) { continue; }
     for (const row of rows) {
       const source = String(row[urlColumn] || '').trim();
@@ -69,17 +71,17 @@ async function recoverImageCaches(db, cfg, log, { cwd = process.cwd() } = {}) {
       if (table === 'image_generations' && row.status !== 'completed' && !cacheFailed && !interrupted) continue;
       const initialPath = row[pathColumn];
       const staticPath = source.startsWith('/static/') ? decodeStaticPath(source) : null;
-      let localPath = await existingImagePath(roots, [initialPath, staticPath, saved.get(source)]);
+      let localPath = await existingImagePath(roots, [initialPath, staticPath, source ? saved.get(source) : null]);
       if (!localPath && /^(?:https?:\/\/|data:image\/)/i.test(source)) {
         const category = table === 'image_generations' ? (row.scene_id ? 'scenes' : row.character_id ? 'characters' : 'images') : defaultCategory;
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
         localPath = await uploadService.downloadImageToLocal(roots[0], source, category, log, 'ig', projectSubdir);
       }
       if (!localPath) continue;
-      saved.set(source, localPath);
+      if (source) saved.set(source, localPath);
       if (localPath === initialPath && !cacheFailed && !interrupted) continue;
       // 下载期间用户可能替换了主图，不能将旧结果回写到新素材上。
-      const result = db.prepare(`UPDATE ${table} SET ${pathColumn} = ? WHERE id = ? AND ${urlColumn} = ? AND ${pathColumn} IS ? AND deleted_at IS NULL`)
+      const result = db.prepare(`UPDATE ${table} SET ${pathColumn} = ? WHERE id = ? AND ${urlColumn} IS ? AND ${pathColumn} IS ? AND deleted_at IS NULL`)
         .run(localPath, row.id, row[urlColumn], initialPath ?? null);
       if (!result.changes) continue;
       restored += 1;
