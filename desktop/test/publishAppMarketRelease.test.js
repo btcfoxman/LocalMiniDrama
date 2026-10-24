@@ -3,7 +3,13 @@ const assert = require('node:assert/strict');
 const {
   compareSemver,
   planReleaseRetention,
+  releaseNotesFromChangelog,
 } = require('../scripts/publish-app-market-release');
+
+it('publishes only this release notes and excludes older versions', () => {
+  assert.equal(releaseNotesFromChangelog('1.2.32', '## [1.2.32] - date\n\n### 新增\n\n- 检查更新\n\n---\n\n## [1.2.31]\nold'), '### 新增\n\n- 检查更新');
+  assert.equal(releaseNotesFromChangelog('9.0.0', '## [1.2.32]\nnotes'), '');
+});
 
 describe('app market S3 release retention', () => {
   it('keeps the current release and only the newest historical version', () => {

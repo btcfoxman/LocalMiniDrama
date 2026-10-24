@@ -13,6 +13,9 @@
   },
   "files": [
     "main.js",
+    "preload.js",
+    "updateManager.js",
+    "configRecovery.js",
     "package.json",
     "assets/icons/**/*",
     "backend-app/**/*",

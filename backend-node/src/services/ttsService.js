@@ -145,7 +145,6 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
       ttsModel || 'speech-02-hd'
     );
   } else if (provider === 'openai' || ttsConfig.base_url) {
-    console.log('==c sxy synthesizeWithOpenai', text, voiceId, ttsConfig.api_key, ttsConfig.base_url, ttsModel, finalSpeed);
     audioBuffer = await synthesizeWithOpenai(
       text,
       voiceId || 'alloy',
@@ -159,18 +158,19 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   }
 
   // 保存到本地
-  const audioDir = path.join(storage_base, 'audio');
-  if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
   const filename = `tts_sb${storyboard_id || 'x'}_${randomUUID().slice(0, 8)}.mp3`;
-  const filePath = path.join(audioDir, filename);
-  fs.writeFileSync(filePath, audioBuffer);
   const localPath = `audio/${filename}`;
+  const uploadService = require('./uploadService');
+  if (!audioBuffer?.length || /^\s*(?:<!doctype|<html|\{)/i.test(audioBuffer.subarray(0, 64).toString('utf8'))) throw new Error('TTS 未返回有效音频内容');
   let audioUrl = '';
   try {
-    const uploadService = require('./uploadService');
-    audioUrl = await uploadService.uploadLocalPathToStorage(storage_base, localPath, 'audio/mpeg', log)
-      || uploadService.buildPublicUrl(localPath);
-  } catch (_) {}
+    audioUrl = await uploadService.saveBufferToStorage(storage_base, localPath, audioBuffer, 'audio/mpeg', log);
+  } catch (error) {
+    const saved = await fs.promises.readFile(path.join(storage_base, localPath)).catch(() => null);
+    if (!saved?.equals(audioBuffer)) throw error;
+    log.warn('[TTS] 远程上传失败，音频已保留在本地', { local_path: localPath, error: error.message });
+  }
+  audioUrl = '/static/' + localPath.split('/').map(encodeURIComponent).join('/');
   log.info('[TTS] 合成完成', { storyboard_id, local_path: localPath, provider });
   try { const cs = require('./cloudService'); cs.reportUsage('tts', ttsModel || '', '', 0); } catch (_) {}
   return { local_path: localPath, audio_url: audioUrl };

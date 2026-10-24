@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const uploadService = require('./uploadService');
 const objectStorage = require('./objectStorageService');
-const proxyCache = require('./mediaProxyCache');
 const { imageCacheRoots } = require('./imageCacheRecovery');
+const { uploadReference } = require('./referenceUploadService');
 
 const MIME_TYPES = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
@@ -154,7 +154,12 @@ function createReferenceResolver(db, log, opts = {}) {
       }
     }
     if (!local) {
-      if (isPublicHttpUrl(raw) && await proxyCache.isProxyUrlAlive(raw)) return raw;
+      if (isPublicHttpUrl(raw)) {
+        const relative = await uploadService.downloadMediaToLocal(storagePath, raw, kind, log, 'reference', 'library');
+        if (relative) local = safeLocalPath(storagePath, relative, false);
+      }
+    }
+    if (!local) {
       log?.warn?.('[素材读取] 未找到本地参考文件', { storage_root: storagePath, searched_roots: roots, relative_paths: candidates.map(item => item.relative), video_gen_id: opts.video_gen_id });
       throw new Error(`参考${kind === 'audio' ? '音频' : kind === 'video' ? '视频' : '图片'}链接已失效或本地文件不存在，请重新上传素材后重试`);
     }
@@ -176,13 +181,8 @@ function createReferenceResolver(db, log, opts = {}) {
       }
     } else if (uploadService.isImageProxyEnabled(proxy)) {
       const buffer = await fs.promises.readFile(local.absolute);
-      // 内容变化或切换中转配置后，不再复用旧文件/旧图床的链接。
-      const cacheKey = proxyCache.buildProxyCacheKey(buffer, mimeType, proxy);
-      const cached = await proxyCache.getProxyCacheValidated(db, cacheKey, log, opts.video_gen_id);
-      if (cached) return cached;
-      const url = await uploadService.uploadToImageProxy(buffer, mimeType, log, opts.video_gen_id, proxy);
+      const url = await uploadReference(buffer, mimeType, log, db, opts.video_gen_id, proxy);
       if (isPublicHttpUrl(url)) {
-        proxyCache.setProxyCache(db, cacheKey, url);
         return url;
       }
     }

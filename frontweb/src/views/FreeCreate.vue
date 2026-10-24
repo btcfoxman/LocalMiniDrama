@@ -124,6 +124,8 @@
               <div v-else-if="item.status === 'failed'" class="media-error">
                 <el-icon><CircleClose /></el-icon>
                 <span>{{ item.error || '生成失败' }}</span>
+                <el-button v-if="item.imageGenerationId && isImageCacheFailure(item.error)" size="small" :loading="item.retrying" @click="retryImageCache(item)">重试保存</el-button>
+                <el-button v-if="item.videoGenerationId && String(item.error).startsWith('视频已生成，但本地缓存失败')" size="small" :loading="item.retrying" @click="retryVideoCache(item)">重试保存</el-button>
               </div>
             </div>
             <div class="result-meta">
@@ -152,6 +154,8 @@ import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
 import { generationSettingsAPI } from '@/api/prompts'
+import { isImageCacheFailure } from '@/utils/imageCacheRetry'
+import { assetImageUrl, normalizeMediaUrl } from '@/utils/mediaUrl'
 
 const mode = ref('image')
 const prompt = ref('')
@@ -239,6 +243,7 @@ async function generate() {
         style: style.value || undefined,
         aspect_ratio: aspectRatio.value,
       })
+      newItem.imageGenerationId = res?.id
       if (res?.task_id) {
         await pollImageTask(res.task_id, newItem)
       } else if (res?.image_url || res?.local_path) {
@@ -257,6 +262,7 @@ async function generate() {
         body.image_url = '/static/' + refImageLocalPath.value
       }
       const res = await videosAPI.create(body)
+      newItem.videoGenerationId = res?.id
       if (res?.task_id) {
         await pollVideoTask(res.task_id, newItem)
       } else {
@@ -278,11 +284,12 @@ async function pollImageTask(taskId, item, maxMs = 180000) {
   while (Date.now() - start < maxMs) {
     await new Promise((r) => setTimeout(r, 3000))
     try {
-      const res = await imagesAPI.getTask ? imagesAPI.getTask(taskId) : null
+      const { taskAPI } = await import('@/api/task')
+      const res = await taskAPI.get(taskId)
       if (!res) break
       if (res.status === 'completed' && res.result) {
-        const r = res.result
-        item.url = r.image_url ? r.image_url : (r.local_path ? '/static/' + r.local_path : null)
+        const r = typeof res.result === 'string' ? JSON.parse(res.result) : res.result
+        item.url = assetImageUrl(r)
         item.status = 'completed'
         return
       }
@@ -297,6 +304,17 @@ async function pollImageTask(taskId, item, maxMs = 180000) {
   item.error = '超时'
 }
 
+async function retryImageCache(item) {
+  item.retrying = true
+  try {
+    const image = await imagesAPI.retryCache(item.imageGenerationId)
+    item.url = assetImageUrl(image)
+    item.status = 'completed'
+    item.error = null
+  } catch (error) { item.error = error.message }
+  finally { item.retrying = false }
+}
+
 async function pollVideoTask(taskId, item) {
   const maxMs = videoPollMaxMs.value
   const start = Date.now()
@@ -306,11 +324,11 @@ async function pollVideoTask(taskId, item) {
     try {
       const res = await taskAPI.get(taskId)
       if (res?.status === 'completed' && res?.result) {
-        const r = res.result
+        const r = typeof res.result === 'string' ? JSON.parse(res.result) : res.result
         const vgId = r.video_generation_id
         if (vgId) {
           const vRes = await videosAPI.get(vgId)
-          item.url = vRes?.video_url || (vRes?.local_path ? '/static/' + vRes.local_path : '')
+          item.url = vRes?.local_path ? normalizeMediaUrl(vRes.local_path) : vRes?.video_url || ''
         }
         item.status = 'completed'
         return
@@ -324,6 +342,17 @@ async function pollVideoTask(taskId, item) {
   }
   item.status = 'failed'
   item.error = '超时'
+}
+
+async function retryVideoCache(item) {
+  item.retrying = true
+  try {
+    const video = await videosAPI.retryCache(item.videoGenerationId)
+    item.url = video.local_path ? normalizeMediaUrl(video.local_path) : video.video_url
+    item.status = 'completed'
+    item.error = null
+  } catch (error) { ElMessage.error(error.message || '保存失败，请重试') }
+  finally { item.retrying = false }
 }
 </script>
 

@@ -35,6 +35,15 @@ function routes(db, cfg, log) {
         response.internalError(res, err.message);
       }
     },
+    retryCache: async (req, res) => {
+      try {
+        const item = await require('../services/imageCacheRetryService').retryImageCache(db, log, req.params.id);
+        response.success(res, item);
+      } catch (error) {
+        log.warn('[图片缓存] 重试保存失败', { image_gen_id: req.params.id, error: error.message });
+        response.badRequest(res, error.message);
+      }
+    },
     delete: (req, res) => {
       try {
         const ok = imageService.deleteById(db, log, req.params.id);

@@ -1,7 +1,8 @@
-const { app, BrowserWindow, Menu, Tray, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, net, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { repairDuplicateTopLevelMappings, mergeBundledStorage } = require('./configRecovery');
+const { createUpdateManager } = require('./updateManager');
 
 // 显式固定 userData 目录，使开发模式与打包 exe 路径完全一致，防止 productName 变更导致路径漂移
 const USERDATA_DIR = path.join(app.getPath('appData'), 'overseasdrama-desktop');
@@ -53,6 +54,9 @@ let serverInstance = null;
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+let updateManager = null;
+let updateUnavailableReason = '更新服务尚未初始化，请稍后重试';
+let desktopOrigin = '';
 
 /** 开发模式用 backend-node（改代码即生效）；打包后用 backend-app */
 function getBackendModulePath() {
@@ -255,6 +259,7 @@ function ensureTray() {
   tray.setToolTip('OverseasDrama');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示主窗口', click: showMainWindow },
+    { label: '检查更新', click: () => { showMainWindow(); checkUpdatesManually(); } },
     { type: 'separator' },
     { label: '退出', click: quitApp },
   ]));
@@ -271,30 +276,6 @@ function boolConfig(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
   return !['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
-}
-
-function parseSemver(value) {
-  const match = String(value || '').trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
-  if (!match) return null;
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] || '',
-  };
-}
-
-function compareSemver(left, right) {
-  const a = parseSemver(left);
-  const b = parseSemver(right);
-  if (!a || !b) return 0;
-  for (const key of ['major', 'minor', 'patch']) {
-    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1;
-  }
-  if (a.prerelease === b.prerelease) return 0;
-  if (!a.prerelease) return 1;
-  if (!b.prerelease) return -1;
-  return a.prerelease > b.prerelease ? 1 : -1;
 }
 
 function getUpdateConfig() {
@@ -330,147 +311,66 @@ function getUpdateConfig() {
 }
 
 async function fetchUpdatePolicy(config) {
-  if (!config.latestJsonUrl || typeof fetch !== 'function') return null;
-  try {
-    const res = await fetch(config.latestJsonUrl, {
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    });
-    if (!res.ok) {
-      writeMainLog(`update policy fetch failed status=${res.status}`);
-      return null;
-    }
-    const body = await res.json();
-    const latest = body?.data?.latest;
-    if (!latest) return null;
-    return {
-      version: latest.version || '',
-      forceUpdate: latest.force_update === true || latest.forceUpdate === true,
-      minSupportedVersion: latest.min_supported_version || latest.minSupportedVersion || '',
-    };
-  } catch (err) {
-    writeMainLog(`update policy fetch error: ${err && err.message ? err.message : err}`);
-    return null;
-  }
+  const res = await net.fetch(config.latestJsonUrl, {
+    headers: { Accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error('读取更新策略失败：HTTP ' + res.status);
+  const latest = (await res.json())?.data?.latest;
+  if (!latest) throw new Error('更新服务未返回有效的版本策略');
+  return {
+    version: latest.version || '',
+    forceUpdate: latest.force_update === true || latest.forceUpdate === true,
+    minSupportedVersion: latest.min_supported_version || latest.minSupportedVersion || '',
+    releaseNotes: latest.release_notes || latest.releaseNotes || '',
+  };
 }
 
-function isForceUpdate(policy) {
-  if (!policy) return false;
-  if (policy.forceUpdate) return true;
-  if (policy.minSupportedVersion && compareSemver(app.getVersion(), policy.minSupportedVersion) < 0) {
-    return true;
-  }
-  return false;
+function showUpdateDialog(options) {
+  return mainWindow && !mainWindow.isDestroyed()
+    ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options);
+}
+
+async function checkUpdatesManually() {
+  if (updateManager) return updateManager.check(true);
+  await showUpdateDialog({ type: 'info', title: '检查更新', message: '暂时无法检查更新', detail: updateUnavailableReason, buttons: ['确定'] });
+  return { status: 'unavailable', message: updateUnavailableReason };
 }
 
 function setupAutoUpdater() {
   const config = getUpdateConfig();
-  if (!config.enabled) {
-    writeMainLog('autoUpdater disabled by config');
-    return;
-  }
-  if (!app.isPackaged && process.env.OVERSEASDRAMA_FORCE_UPDATE_CHECK !== '1') {
-    writeMainLog('autoUpdater skipped in development');
-    return;
-  }
-  if (!config.feedUrl) {
-    writeMainLog('autoUpdater skipped: missing update service url');
-    return;
-  }
-  if (app.isPackaged && !/^https:\/\//i.test(config.feedUrl)) {
-    writeMainLog(`autoUpdater skipped: feed url must be https in packaged app (${config.feedUrl})`);
-    return;
-  }
-
-  let autoUpdater;
-  try {
-    ({ autoUpdater } = require('electron-updater'));
-  } catch (err) {
-    writeMainLog(`autoUpdater unavailable: ${err && err.message ? err.message : err}`);
-    return;
-  }
-
-  let updatePolicyPromise = null;
-  let updatePolicy = null;
-  const loadPolicy = () => {
-    if (!updatePolicyPromise) {
-      updatePolicyPromise = fetchUpdatePolicy(config).then((policy) => {
-        updatePolicy = policy;
-        return policy;
+  if (!config.enabled) updateUnavailableReason = '当前客户端配置已关闭更新服务';
+  else if (!app.isPackaged && process.env.OVERSEASDRAMA_FORCE_UPDATE_CHECK !== '1') updateUnavailableReason = '开发模式不安装客户端更新，请使用正式安装包';
+  else if (!config.feedUrl || !config.latestJsonUrl) updateUnavailableReason = '客户端尚未配置更新服务地址';
+  else if (app.isPackaged && (!/^https:\/\//i.test(config.feedUrl) || !/^https:\/\//i.test(config.latestJsonUrl))) updateUnavailableReason = '更新服务必须使用 HTTPS 地址';
+  else {
+    try {
+      const { autoUpdater } = require('electron-updater');
+      autoUpdater.setFeedURL({ provider: 'generic', url: config.feedUrl });
+      updateManager = createUpdateManager({
+        updater: autoUpdater, dialog: { showMessageBox: showUpdateDialog },
+        currentVersion: app.getVersion(), loadPolicy: () => fetchUpdatePolicy(config),
+        log: writeMainLog, onQuit: quitApp, onInstall: () => { isQuitting = true; },
       });
-    }
-    return updatePolicyPromise;
-  };
-
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.setFeedURL({ provider: 'generic', url: config.feedUrl });
-
-  autoUpdater.on('checking-for-update', () => {
-    writeMainLog(`autoUpdater checking appKey=${config.appKey} channel=${config.channel} feed=${config.feedUrl}`);
-  });
-  autoUpdater.on('update-available', async (info) => {
-    const policy = await loadPolicy();
-    const force = isForceUpdate(policy);
-    writeMainLog(`autoUpdater update available version=${info?.version || ''} force=${force}`);
-    if (force) {
-      dialog.showMessageBox({
-        type: 'info',
-        buttons: ['OK'],
-        title: 'Update required',
-        message: 'A required update is being downloaded.',
-        detail: `Current version ${app.getVersion()} will be updated to ${info?.version || policy?.version || 'the latest version'}.`,
-      }).catch(() => {});
-    }
-  });
-  autoUpdater.on('update-not-available', (info) => {
-    writeMainLog(`autoUpdater no update latest=${info?.version || ''}`);
-  });
-  autoUpdater.on('download-progress', (progress) => {
-    const percent = Number(progress?.percent || 0).toFixed(1);
-    writeMainLog(`autoUpdater download ${percent}% ${progress?.transferred || 0}/${progress?.total || 0}`);
-  });
-  autoUpdater.on('update-downloaded', async (info) => {
-    const policy = updatePolicy || await loadPolicy();
-    const force = isForceUpdate(policy);
-    writeMainLog(`autoUpdater update downloaded version=${info?.version || ''} force=${force}`);
-    if (force) {
-      await dialog.showMessageBox({
-        type: 'info',
-        buttons: ['Restart now'],
-        title: 'Update ready',
-        message: 'A required update is ready to install.',
-        detail: 'The application will restart to complete the update.',
-      }).catch(() => null);
-      isQuitting = true;
-      autoUpdater.quitAndInstall(false, true);
+      setTimeout(() => updateManager.check(false), 15000);
       return;
-    }
+    } catch (error) { updateUnavailableReason = '更新模块初始化失败：' + error.message; }
+  }
+  writeMainLog(updateUnavailableReason);
+}
 
-    const result = await dialog.showMessageBox({
-      type: 'info',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update ready',
-      message: `OverseasDrama ${info?.version || ''} is ready to install.`,
-      detail: 'Restart the application to finish installing the update.',
-    }).catch(() => ({ response: 1 }));
-    if (result.response === 0) {
-      isQuitting = true;
-      autoUpdater.quitAndInstall(false, true);
-    }
-  });
-  autoUpdater.on('error', (err) => {
-    writeMainLog(`autoUpdater error: ${err && err.stack ? err.stack : err}`);
-  });
-
-  setTimeout(() => {
-    loadPolicy().catch(() => null);
-    autoUpdater.checkForUpdates().catch((err) => {
-      writeMainLog(`autoUpdater check failed: ${err && err.message ? err.message : err}`);
-    });
-  }, 15000);
+function registerDesktopIpc(port) {
+  desktopOrigin = 'http://127.0.0.1:' + port;
+  function assertTrusted(event) {
+    let trusted = false;
+    try {
+      trusted = mainWindow && event.sender === mainWindow.webContents
+        && event.senderFrame === event.sender.mainFrame
+        && new URL(event.senderFrame.url).origin === desktopOrigin;
+    } catch (_) {}
+    if (!trusted) throw new Error('不允许从外部页面调用客户端功能');
+  }
+  ipcMain.handle('desktop:version', event => { assertTrusted(event); return app.getVersion(); });
+  ipcMain.handle('desktop:check-updates', event => { assertTrusted(event); return checkUpdatesManually(); });
 }
 
 /**
@@ -502,7 +402,7 @@ function createWindow(port) {
     height: 800,
     title: appWindowTitle(),
     icon: getWindowIconPath(),
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     show: false,
   });
   mainWindow = win;
@@ -556,6 +456,8 @@ async function startBackend() {
   process.chdir(backendCwd);
 
   const backendModulePath = getBackendModulePath();
+  const { setMediaDownloadFetch } = require(path.join(backendModulePath, 'src', 'services', 'mediaDownloadService.js'));
+  setMediaDownloadFetch((url, options) => net.fetch(url, options));
   try {
     require(path.join(backendModulePath, 'src', 'db', 'migrate.js'));
   } catch (err) {
@@ -603,8 +505,9 @@ app.whenReady().then(async () => {
     return;
   }
   // startBackend 的 Promise 在 listen 回调中 resolve，服务器此时已就绪，直接建窗口
-  createWindow(port);
+  registerDesktopIpc(port);
   setupAutoUpdater();
+  createWindow(port);
 });
 
 app.on('before-quit', () => {

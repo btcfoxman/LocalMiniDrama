@@ -10,6 +10,7 @@
           </span>
         </h1>
         <span class="page-title">AI 配置</span>
+        <DesktopUpdateButton />
         <el-button class="btn-back" @click="goList">
           <el-icon><ArrowLeft /></el-icon>
           返回
@@ -24,6 +25,7 @@
 </template>
 
 <script setup>
+import DesktopUpdateButton from '@/components/DesktopUpdateButton.vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'

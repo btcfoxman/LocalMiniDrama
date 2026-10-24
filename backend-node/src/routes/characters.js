@@ -180,6 +180,7 @@ function routes(db, cfg, log, uploadService) {
         }
         const extraFields = [];
         const extraParams = [];
+        if (body.image_url !== undefined && db.prepare('PRAGMA table_info(characters)').all().some(column => column.name === 'error_msg')) extraFields.push('error_msg = NULL');
         if (body.local_path !== undefined) { extraFields.push('local_path = ?'); extraParams.push(body.local_path ?? null); }
         if (body.extra_images !== undefined) { extraFields.push('extra_images = ?'); extraParams.push(body.extra_images ?? null); }
         if (body.ref_image !== undefined) { extraFields.push('ref_image = ?'); extraParams.push(body.ref_image ?? null); }

@@ -11,6 +11,7 @@ const cache = require('../src/services/mediaProxyCache');
 const { createReferenceResolver, prepareImageReferences, prepareVideoReferences } = require('../src/services/mediaReferenceService');
 const imageClient = require('../src/services/imageClient');
 const videoClient = require('../src/services/videoClient');
+const uploadService = require('../src/services/uploadService');
 
 const log = { info() {}, warn() {}, error() {} };
 const expiredUrl = 'https://provider.example.test/download/result?signature=expired';
@@ -81,14 +82,22 @@ test('project names containing a literal percent retain their local media', asyn
 
 test('foreign static URLs do not accidentally match a different local file', async t => {
   const { db, write } = setup(t);
-  write('images/frame.png');
+  write('images/frame.png', Buffer.from('unrelated-local-file'));
   const foreign = 'https://foreign.example.test/static/images/frame.png';
-  t.mock.method(global, 'fetch', async (url, opts) => {
+  t.mock.method(uploadService, 'downloadMediaToLocal', async (root, url, kind) => {
     assert.equal(url, foreign);
-    assert.equal(opts.method, 'HEAD');
-    return new Response('');
+    assert.equal(kind, 'image');
+    write('references/fetched.png', Buffer.from('remote-file'));
+    return 'references/fetched.png';
   });
-  assert.equal(await createReferenceResolver(db, log)(foreign), foreign);
+  t.mock.method(global, 'fetch', async (url, opts) => {
+    assert.equal(url, 'https://relay.example.test/upload');
+    assert.equal(opts.method, 'POST');
+    assert.ok(opts.body.toString().includes('remote-file'));
+    assert.ok(!opts.body.toString().includes('unrelated-local-file'));
+    return new Response(JSON.stringify({ url: newUrl }));
+  });
+  assert.equal(await createReferenceResolver(db, log)(foreign), newUrl);
 });
 
 test('all existing local copies are checked before a missing S3 object is downloaded', async t => {
@@ -162,7 +171,7 @@ test('repeat video submissions from a public app origin renew the saved local re
     assert.ok(!JSON.stringify(submissions[i]).includes(origin));
   }
   assert.deepEqual(uploads, [`${newUrl}/1`, `${newUrl}/2`]);
-  assert.deepEqual(probes, [uploads[0]]);
+  assert.deepEqual(probes, []);
   assert.equal(request.image_url, frame);
 });
 
@@ -177,11 +186,11 @@ test('dead relay cache is refreshed even before its configured expiry', async t 
     return opts.method === 'HEAD' ? new Response('', { status: 404 }) : new Response(JSON.stringify({ url: newUrl }));
   });
   assert.equal(await createReferenceResolver(db, log)('images/reference.png'), newUrl);
-  assert.deepEqual(calls, ['HEAD', 'POST']);
+  assert.deepEqual(calls, ['POST']);
   assert.equal(cache.getProxyCache(db, key), newUrl);
 });
 
-test('readable relay cache avoids reupload; changed bytes or relay config invalidate it', async t => {
+test('every task uploads fresh media even while an earlier relay link is still readable', async t => {
   const { db, cfg, write } = setup(t);
   const bytes = write('images/reference.png');
   cache.setProxyCache(db, cache.buildProxyCacheKey(bytes, 'image/png', cfg.image_proxy), newUrl);
@@ -192,12 +201,12 @@ test('readable relay cache avoids reupload; changed bytes or relay config invali
     return new Response(JSON.stringify({ url: newUrl }));
   });
   assert.equal(await createReferenceResolver(db, log)('images/reference.png'), newUrl);
-  assert.equal(uploads, 0);
+  assert.equal(uploads, 1);
   write('images/reference.png', Buffer.from('edited-media'));
   await createReferenceResolver(db, log)('images/reference.png');
   cfg.image_proxy.token = 'different-token';
   await createReferenceResolver(db, log)('images/reference.png');
-  assert.equal(uploads, 2);
+  assert.equal(uploads, 3);
 });
 
 test('video and audio files retain their extension, MIME type and bytes when relayed', async t => {

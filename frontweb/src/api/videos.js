@@ -8,5 +8,11 @@ export const videosAPI = {
   /** 创建单条分镜视频生成任务，body: { drama_id, storyboard_id, prompt, image_url?, model?, ... } */
   create(body) {
     return request.post('/videos', prepareVideoGenerationRequest(body))
+  },
+  retryCache(id) {
+    return request.post(`/videos/${id}/retry-cache`)
+  },
+  get(id) {
+    return request.get(`/videos/${id}`)
   }
 }

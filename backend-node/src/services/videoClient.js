@@ -7,6 +7,7 @@ const uploadService = require('./uploadService');
 const { uploadLocalImageToProxy, uploadToImageProxy } = uploadService;
 const imageClient = require('./imageClient');
 const { prepareVideoReferences } = require('./mediaReferenceService');
+const { withReferenceUploads } = require('./referenceUploadService');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -3976,6 +3977,10 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
 async function callVideoApi(db, log, opts) {
+  return withReferenceUploads(() => callVideoApiWithReferences(db, log, opts));
+}
+
+async function callVideoApiWithReferences(db, log, opts) {
   const preferredModel = opts.model;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {

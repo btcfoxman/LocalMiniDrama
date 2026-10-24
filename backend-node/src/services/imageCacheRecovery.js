@@ -73,7 +73,7 @@ async function recoverImageCaches(db, cfg, log, { cwd = process.cwd() } = {}) {
       const staticPath = source.startsWith('/static/') ? decodeStaticPath(source) : null;
       let localPath = await existingImagePath(roots, [initialPath, staticPath, source ? saved.get(source) : null]);
       if (!localPath && /^(?:https?:\/\/|data:image\/)/i.test(source)) {
-        const category = table === 'image_generations' ? (row.scene_id ? 'scenes' : row.character_id ? 'characters' : 'images') : defaultCategory;
+        const category = table === 'image_generations' ? (row.scene_id ? 'scenes' : row.character_id ? 'characters' : initialTask?.type === 'prop_image_generation' ? 'props' : 'images') : defaultCategory;
         const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
         localPath = await uploadService.downloadImageToLocal(roots[0], source, category, log, 'ig', projectSubdir);
       }

@@ -79,6 +79,7 @@ function update(db, log, id, updates) {
   if (updates.negative_prompt !== undefined) { set.push('negative_prompt = ?'); params.push(updates.negative_prompt); }
   if (updates.image_url != null) { set.push('image_url = ?'); params.push(updates.image_url); }
   if (updates.local_path !== undefined) { set.push('local_path = ?'); params.push(updates.local_path ?? null); }
+  if ((updates.image_url != null || updates.local_path !== undefined) && db.prepare('PRAGMA table_info(props)').all().some(column => column.name === 'error_msg')) set.push('error_msg = NULL');
   if (updates.extra_images !== undefined) { set.push('extra_images = ?'); params.push(updates.extra_images ?? null); }
   if (updates.ref_image !== undefined) { set.push('ref_image = ?'); params.push(updates.ref_image ?? null); }
   if (set.length === 0) return existing;

@@ -79,8 +79,6 @@ function getById(db, id) {
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { Readable } = require('stream');
-const { pipeline } = require('stream/promises');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
 const taskService = require('./taskService');
@@ -94,99 +92,15 @@ const {
 
 const fsp = fs.promises;
 
-/** @returns {{ dir: string, relPrefix: string }} 与图片 uploads 一致的工程子目录规则 */
-function resolveVideosDir(storagePath, projectSubdir) {
-  const sub = projectSubdir && String(projectSubdir).trim();
-  if (sub) {
-    const relPrefix = `${sub.replace(/\\/g, '/')}/videos`;
-    return { dir: path.join(storagePath, sub, 'videos'), relPrefix };
-  }
-  return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
-}
-
-function downloadedVideoLooksInvalid(buffer, contentType) {
-  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return 'empty response';
-  const ct = String(contentType || '').toLowerCase();
-  const head = buffer.slice(0, 512).toString('utf8').trimStart().toLowerCase();
-  if (ct.includes('text/html') || head.startsWith('<!doctype') || head.startsWith('<html')) {
-    return 'response is HTML';
-  }
-  if (ct.includes('application/json') || head.startsWith('{')) {
-    return 'response is JSON';
-  }
-  return '';
-}
-
-async function readFileHead(filePath, length = 512) {
-  const handle = await fsp.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, 0);
-    return buffer.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
-}
 
 /**
  * 将远程 video_url 下载到本地
  * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
-  if (!videoUrl || typeof videoUrl !== 'string') return null;
-  const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
-  let filePath = '';
-  try {
-    await fsp.mkdir(dir, { recursive: true });
-    const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
-    const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
-    filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; LocalMiniDrama/1.0)',
-        Accept: 'video/mp4,video/*,*/*',
-      },
-    });
-    if (!res.ok) {
-      log.warn('Download video failed', { status: res.status, videoGenId });
-      return null;
-    }
-    if (res.body && typeof Readable.fromWeb === 'function') {
-      await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(filePath));
-    } else {
-      const buf = Buffer.from(await res.arrayBuffer());
-      await fsp.writeFile(filePath, buf);
-    }
-    const stat = await fsp.stat(filePath);
-    const headBuf = stat.size > 0 ? await readFileHead(filePath) : Buffer.alloc(0);
-    const invalidReason = downloadedVideoLooksInvalid(headBuf, res.headers.get('content-type'));
-    if (invalidReason) {
-      log.warn('Download video returned non-video content', {
-        videoGenId,
-        reason: invalidReason,
-        content_type: res.headers.get('content-type') || '',
-        bytes: stat.size,
-        url_head: videoUrl.slice(0, 160),
-      });
-      try {
-        await fsp.unlink(filePath);
-      } catch (_) {}
-      return null;
-    }
-    const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
-    log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
-    return relativePath;
-  } catch (e) {
-    if (filePath) {
-      try {
-        await fsp.unlink(filePath);
-      } catch (_) {}
-    }
-    log.warn('Download video error', { videoGenId, error: e.message });
-    return null;
-  }
+  return uploadService.downloadMediaToLocal(storagePath, videoUrl, 'video', log, 'vg', projectSubdir, { throwOnError: true, uploadToStorage: false });
 }
+
 
 /** 与图生 aspectRatioToSize 对齐的归一化分辨率（偶数像素，便于 H.264） */
 function targetVideoPixelsForAspect(aspectRatio) {
@@ -303,6 +217,8 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   const now = new Date().toISOString();
   let localPath = null;
   let finalVideoUrl = videoUrl;
+  let cacheError;
+  db.prepare('UPDATE video_generations SET video_url = ?, updated_at = ? WHERE id = ?').run(videoUrl, now, videoGenId);
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
@@ -314,19 +230,32 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
         || uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '')
         || videoUrl;
     }
-  } catch (_) {}
+  } catch (error) { cacheError = error; }
+  if (row.task_id) {
+    const task = taskService.getTask(db, row.task_id);
+    if (task?.status === 'failed' && !String(task.error || '').startsWith('视频已生成，但本地缓存失败')) return;
+  }
+  const freshRow = db.prepare('SELECT video_url FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(videoGenId);
+  if (!freshRow || freshRow.video_url !== videoUrl) return;
+  if (!localPath) {
+    const message = `视频已生成，但本地缓存失败：${cacheError?.message || '未取得本地文件'}。已保留生成结果，请重试保存`;
+    setVideoGenFailed(db, videoGenId, message, new Date().toISOString());
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, message);
+    return;
+  }
   try {
     db.prepare(
-      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = NULL, completed_at = ?, updated_at = ? WHERE id = ?'
     ).run('completed', finalVideoUrl, localPath, now, now, videoGenId);
   } catch (e) {
     if ((e.message || '').includes('completed_at')) {
       db.prepare(
-        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
+        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
       ).run('completed', finalVideoUrl, localPath, now, videoGenId);
     } else throw e;
   }
-  if (row.storyboard_id) {
+  const newerVideo = row.storyboard_id && db.prepare('SELECT id FROM video_generations WHERE storyboard_id = ? AND id > ? AND deleted_at IS NULL LIMIT 1').get(row.storyboard_id, videoGenId);
+  if (row.storyboard_id && !(logLabel === 'cache retry' && newerVideo)) {
     try {
       db.prepare('UPDATE storyboards SET video_url = ?, updated_at = ? WHERE id = ?').run(
         finalVideoUrl, now, row.storyboard_id
@@ -341,6 +270,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     taskService.updateTaskResult(db, row.task_id, {
       video_generation_id: videoGenId,
       video_url: finalVideoUrl,
+      local_path: localPath,
       status: 'completed',
     });
   }
@@ -652,10 +582,23 @@ function deleteById(db, log, id) {
   return result.changes > 0;
 }
 
+async function retryVideoCache(db, log, id) {
+  const row = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(id));
+  if (!row || !row.video_url || row.status !== 'failed' || !String(row.error_msg || '').startsWith('视频已生成，但本地缓存失败')) throw new Error('没有待恢复的视频缓存');
+  const task = row.task_id ? taskService.getTask(db, row.task_id) : null;
+  if (task && !String(task.error || '').startsWith('视频已生成，但本地缓存失败')) throw new Error('原任务已取消或结束');
+  await finalizeSuccessfulVideo(db, log, row.id, row, row, row.video_url, 'cache retry');
+  const result = getById(db, row.id);
+  if (result.status !== 'completed') throw new Error(result.error_msg || '视频保存失败');
+  if (row.task_id) db.prepare('UPDATE async_tasks SET error = NULL WHERE id = ?').run(row.task_id);
+  return result;
+}
+
 module.exports = {
   list,
   getById,
   deleteById,
   processVideoGeneration,
   resumeProcessingVideoGenerations,
+  retryVideoCache,
 };

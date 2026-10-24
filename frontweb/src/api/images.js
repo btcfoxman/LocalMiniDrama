@@ -10,6 +10,9 @@ export const imagesAPI = {
   upload(data) {
     return request.post('/images/upload', data)
   },
+  retryCache(id) {
+    return request.post(`/images/${id}/retry-cache`)
+  },
   delete(id) {
     return request.delete(`/images/${id}`)
   }

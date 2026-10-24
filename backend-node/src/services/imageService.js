@@ -9,6 +9,13 @@ function list(db, query) {
     sql += ' AND storyboard_id = ?';
     params.push(query.storyboard_id);
   }
+  for (const column of ['character_id', 'scene_id']) {
+    if (query[column]) { sql += ` AND ${column} = ?`; params.push(query[column]); }
+  }
+  if (query.prop_id) {
+    sql += " AND task_id IN (SELECT id FROM async_tasks WHERE type = 'prop_image_generation' AND resource_id = ?)";
+    params.push(String(query.prop_id));
+  }
   if (query.frame_type) {
     sql += ' AND frame_type = ?';
     params.push(query.frame_type);
@@ -1403,6 +1410,7 @@ async function processImageGeneration(db, log, imageGenId) {
       .run(result.image_url, new Date().toISOString(), imageGenId);
     const tSave = Date.now();
     let localPath = null;
+    let cacheError;
     try {
       const storagePath = path.isAbsolute(cfg.storage?.local_path)
         ? cfg.storage.local_path
@@ -1416,7 +1424,8 @@ async function processImageGeneration(db, log, imageGenId) {
         category,
         log,
         'ig',
-        projectSubdir
+        projectSubdir,
+        { throwOnError: true }
       );
       if (localPath && imageSize) {
         const absImg = path.join(storagePath, localPath);
@@ -1436,9 +1445,10 @@ async function processImageGeneration(db, log, imageGenId) {
         await normalizeSavedImageToTargetPixels(absNorm, imageSize, log, { id: imageGenId, size: imageSize });
       }
     } catch (saveErr) {
+      cacheError = saveErr;
       log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErr.message, elapsed: elapsed() });
     }
-    if (!localPath) throw new Error('图片已生成，但本地缓存失败，请检查存储目录权限和网络后重启以恢复缓存');
+    if (!localPath) throw new Error(uploadService.imageCacheFailureMessage(cacheError));
 
     // 入库的 image_url：优先指向本地静态路径，避免前端仍用 Gemini 返回的 data URL
     let persistedImageUrl = result.image_url;

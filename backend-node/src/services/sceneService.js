@@ -27,8 +27,9 @@ function updateScene(db, log, sceneId, req) {
   if (req.prompt != null) { updates.push('prompt = ?'); params.push(req.prompt); }
   if (req.polished_prompt != null) { updates.push('polished_prompt = ?'); params.push(req.polished_prompt); }
   if (req.polished_prompt_single != null) { updates.push('polished_prompt_single = ?'); params.push(req.polished_prompt_single); }
-  if (req.image_url != null) { updates.push('image_url = ?'); params.push(req.image_url); }
+    if (req.image_url != null) { updates.push('image_url = ?'); params.push(req.image_url); }
   if (req.local_path !== undefined) { updates.push('local_path = ?'); params.push(req.local_path); }
+    if ((req.image_url != null || req.local_path !== undefined) && db.prepare('PRAGMA table_info(scenes)').all().some(column => column.name === 'error_msg')) updates.push('error_msg = NULL');
   if (req.extra_images !== undefined) { updates.push('extra_images = ?'); params.push(req.extra_images ?? null); }
   if (req.ref_image !== undefined) { updates.push('ref_image = ?'); params.push(req.ref_image ?? null); }
   if (updates.length === 0) return { ok: true };

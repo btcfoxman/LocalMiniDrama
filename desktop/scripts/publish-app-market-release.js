@@ -18,6 +18,15 @@ function env(name, fallback = '') {
   return value === undefined || value === null || value === '' ? fallback : value;
 }
 
+function releaseNotesFromChangelog(version, text) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex(line => line.startsWith('## [' + version + ']'));
+  if (start < 0) return '';
+  let end = start + 1;
+  while (end < lines.length && !lines[end].startsWith('## [')) end++;
+  return lines.slice(start + 1, end).join('\n').trim().replace(/\n---\s*$/, '').trim();
+}
+
 function requiredEnv(name) {
   const value = env(name);
   if (!value) throw new Error(`${name} is required`);
@@ -450,7 +459,8 @@ async function main() {
 
   const blockmap = files.find((file) => file.fileName === `${primary.fileName}.blockmap`);
   const stagingPercentage = numberValue(env('APP_MARKET_STAGING_PERCENTAGE', env('APP_MARKET_ROLLOUT', '100')), 100);
-  const releaseNotes = env('APP_MARKET_RELEASE_NOTES');
+  const changelog = path.join(rootDir, '..', 'CHANGELOG.md');
+  const releaseNotes = env('APP_MARKET_RELEASE_NOTES', fs.existsSync(changelog) ? releaseNotesFromChangelog(version, fs.readFileSync(changelog, 'utf8')) : '');
   const minSupportedVersion = env('APP_MARKET_MIN_SUPPORTED_VERSION');
 
   const payload = {
@@ -514,6 +524,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  releaseNotesFromChangelog,
   compareSemver,
   planReleaseRetention,
   pruneHistoricalReleases,

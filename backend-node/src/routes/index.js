@@ -246,6 +246,7 @@ function setupRouter(cfg, db, log) {
   r.post('/images/scene/:scene_id', images.scene);
   r.post('/images/upload', images.upload);
   r.get('/images/:id', images.get);
+  r.post('/images/:id/retry-cache', images.retryCache);
   r.delete('/images/:id', images.delete);
 
   // ---------- videos ----------
@@ -254,6 +255,7 @@ function setupRouter(cfg, db, log) {
   r.post('/videos/image/:image_gen_id', videos.fromImage);
   r.post('/videos/episode/:episode_id/batch', videos.episodeBatch);
   r.get('/videos/:id', videos.get);
+  r.post('/videos/:id/retry-cache', videos.retryCache);
   r.delete('/videos/:id', videos.delete);
 
   // ---------- video-merges ----------

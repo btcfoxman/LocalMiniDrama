@@ -1,6 +1,6 @@
 {
   "name": "overseasdrama-desktop",
-  "version": "1.2.31",
+  "version": "1.2.32",
   "description": "OverseasDrama desktop client",
   "main": "main.js",
   "author": "OverseasDrama",
@@ -59,6 +59,8 @@
     },
     "files": [
       "main.js",
+      "preload.js",
+      "updateManager.js",
       "configRecovery.js",
       "package.json",
       "assets/icons/**/*",

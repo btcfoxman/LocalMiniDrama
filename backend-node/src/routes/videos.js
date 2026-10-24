@@ -86,6 +86,10 @@ function routes(db, log) {
         response.internalError(res, err.message);
       }
     },
+    retryCache: async (req, res) => {
+      try { response.success(res, await videoService.retryVideoCache(db, log, req.params.id)); }
+      catch (error) { response.badRequest(res, error.message); }
+    },
     delete: (req, res) => {
       try {
         const ok = videoService.deleteById(db, log, req.params.id);

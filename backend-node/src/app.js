@@ -27,6 +27,7 @@ function createApp() {
   const { createStaticMediaMiddleware } = require('./services/staticMediaService');
   setImmediate(() => {
     recoverImageCaches(db, config, log).catch(e => log.warn('[图片缓存] 恢复未完成', { error: e.message }));
+    require('./services/mediaCacheRecovery').recoverMediaCaches(db, config, log).catch(e => log.warn('[素材缓存] 恢复未完成', { error: e.message }));
   });
 
   const app = express();

@@ -103,8 +103,14 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
 
   taskService.updateTaskStatus(db, taskId, 'processing', 80, '正在保存图片...');
 
+  const generatedAt = new Date().toISOString();
+  const generated = db.prepare(`INSERT INTO image_generations (drama_id, provider, prompt, model, image_url, status, task_id, created_at, updated_at)
+    VALUES (?, 'prop', ?, ?, ?, 'processing', ?, ?, ?)`).run(prop.drama_id || 0, fullPrompt, model, result.image_url, taskId, generatedAt, generatedAt);
+  const imageGenerationId = generated.lastInsertRowid;
+
   let localPath = null;
   let finalImageUrl = result.image_url;
+  let cacheError;
   try {
     const storagePath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
@@ -115,15 +121,24 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       result.image_url,
       'props',
       log,
-      'prop_' + propId,
-      projectSubdir
+      'ig',
+      projectSubdir,
+      { throwOnError: true }
     );
     if (localPath) {
       finalImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '') || result.image_url;
     }
-  } catch (_) {}
+  } catch (error) { cacheError = error; }
+  if (!localPath) {
+    const error = uploadService.imageCacheFailureMessage(cacheError);
+    db.prepare("UPDATE image_generations SET status = 'failed', error_msg = ?, updated_at = ? WHERE id = ?").run(error, new Date().toISOString(), imageGenerationId);
+    taskService.updateTaskError(db, taskId, error);
+    try { db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?').run(error, new Date().toISOString(), propId); } catch (_) {}
+    return;
+  }
 
   const now = new Date().toISOString();
+  db.prepare("UPDATE image_generations SET status = 'completed', image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?").run(finalImageUrl, localPath, now, now, imageGenerationId);
   // 旧图追加到 extra_images，与上传逻辑保持一致
   const oldProp = db.prepare('SELECT local_path, image_url, extra_images FROM props WHERE id = ?').get(propId);
   const oldPath = oldProp?.local_path || oldProp?.image_url || '';

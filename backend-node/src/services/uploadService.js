@@ -1,11 +1,12 @@
 // 与 Go UploadService 对齐：保存到 local_path，返回 url / local_path
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const http = require('http');
 const { randomUUID } = require('crypto');
 const { createHash } = require('crypto');
 const objectStorage = require('./objectStorageService');
+const { downloadImageBuffer, fetchMedia } = require('./mediaDownloadService');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const fsp = fs.promises;
 const DEFAULT_IMAGE_PROXY_UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload';
@@ -82,47 +83,6 @@ function buildPublicUrl(localPath, baseUrl = '') {
   return baseUrl
     ? `${baseUrl.replace(/\/$/, '')}/${urlPath}`
     : `/static/${urlPath}`;
-}
-
-/**
- * 用 Node.js 原生 http/https 模块下载 URL 到 Buffer。
- * 比 native fetch 在 Electron 打包环境中更可靠，支持自动跟随 301/302 重定向（最多 5 次）。
- */
-function downloadBufferViaNodeHttp(url, timeoutMs = 30000, redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    if (redirectCount > 5) return reject(new Error('Too many redirects'));
-    const parsed = new URL(url);
-    const mod = parsed.protocol === 'https:' ? https : http;
-    const options = {
-      hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-      path: parsed.pathname + parsed.search,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; LocalMiniDrama/1.0)',
-        'Accept': 'image/*,*/*',
-      },
-      timeout: timeoutMs,
-    };
-    const req = mod.request(options, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const location = new URL(res.headers.location, url).href;
-        res.resume();
-        return resolve(downloadBufferViaNodeHttp(location, timeoutMs, redirectCount + 1));
-      }
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        return reject(new Error(`HTTP ${res.statusCode}`));
-      }
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: res.headers['content-type'] || '' }));
-      res.on('error', reject);
-    });
-    req.on('timeout', () => { req.destroy(); reject(new Error(`Download timeout after ${timeoutMs}ms`)); });
-    req.on('error', reject);
-    req.end();
-  });
 }
 
 function ensureDir(dir) {
@@ -213,9 +173,10 @@ async function uploadFile(storagePath, baseUrl, log, fileBuffer, originalName, m
  * @param {string|null} [projectSubdir] - 如 projects/0001_20250324_剧名 或 library，与 uploadFile 一致
  * @returns {Promise<string|null>} 相对路径如 characters/xxx.png，失败返回 null
  */
-async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix = '', projectSubdir = null) {
+async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix = '', projectSubdir = null, options = {}) {
   if (!imageUrl || typeof imageUrl !== 'string') return null;
   const { dir: categoryPath, relPrefix } = resolveCategoryPaths(storagePath, category, projectSubdir);
+  let phase = 'write';
   try {
     ensureDir(categoryPath);
     // 来源地址精确对应固定文件名，进程在写库前退出后仍能找回已写入的文件。
@@ -230,22 +191,21 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
     }
     let buffer;
     let ext = 'png';
+    phase = 'download';
     if (imageUrl.startsWith('data:')) {
-      const match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+      const match = imageUrl.match(/^data:image\/([a-z0-9.+-]+)(?:;[^,;]+)*;base64,([\s\S]+)$/i);
       if (!match) {
-        log.warn('downloadImageToLocal: invalid data URL');
-        return null;
+        throw new Error('图片 Base64 数据格式异常');
       }
       buffer = Buffer.from(match[2], 'base64');
       ext = match[1] === 'jpeg' ? 'jpg' : match[1];
     } else {
-      // 使用 Node.js 原生 http/https 模块下载，比 native fetch 在 Electron 打包环境更可靠
-      // 失败自动重试最多 3 次
+      // 桌面优先走系统代理网络通道；仅重试下载，不重复生成。
       let lastErr;
       let contentType = '';
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          const result = await downloadBufferViaNodeHttp(imageUrl, 30000);
+          const result = await downloadImageBuffer(imageUrl, { timeoutMs: options.timeoutMs ?? 90000, log });
           buffer = result.buffer;
           contentType = result.contentType;
           break;
@@ -257,8 +217,7 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
         }
       }
       if (!buffer) {
-        log.warn('downloadImageToLocal: 图片下载失败', { category, error: lastErr?.message });
-        return null;
+        throw lastErr || new Error('图片下载失败');
       }
       if (!buffer.length || /text\/|application\/json/i.test(contentType) || /^\s*(?:<!doctype|<html|\{)/i.test(buffer.subarray(0, 64).toString('utf8'))) {
         throw new Error('图片下载返回了空文件或非图片内容');
@@ -268,6 +227,7 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
     if (!buffer.length) throw new Error('图片数据为空');
     const name = `${cacheName}.${ext}`;
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
+    phase = 'write';
     try {
       await saveBufferToStorage(storagePath, relativePath, buffer, `image/${ext === 'jpg' ? 'jpeg' : ext}`, log);
     } catch (e) {
@@ -279,7 +239,86 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
     log.info('Image saved to local', { category, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return relativePath;
   } catch (e) {
-    log.warn('downloadImageToLocal error', { category, error: e.message });
+    e.cachePhase = phase;
+    log.warn('downloadImageToLocal error', { category, phase, code: e.code, error: e.message, storage_path: categoryPath });
+    if (options.throwOnError) throw e;
+    return null;
+  }
+}
+
+function imageCacheFailureMessage(error) {
+  const phase = error?.cachePhase === 'download' ? '下载图片失败' : '保存图片失败';
+  const detail = String(error?.message || '未取得可用的本地文件').slice(0, 220);
+  const code = error?.code && !detail.includes(error.code) ? ` [${error.code}]` : '';
+  return `图片已生成，但本地缓存失败：${phase}，${detail}${code}。已保留生成结果，请先恢复缓存，避免重复生成`;
+}
+
+async function downloadMediaToLocal(storagePath, source, kind, log, prefix = '', projectSubdir = null, options = {}) {
+  if (kind === 'image') return downloadImageToLocal(storagePath, source, 'references', log, prefix || 'reference', projectSubdir, options);
+  if (!['audio', 'video'].includes(kind)) throw new Error('不支持的素材类型');
+  const category = kind === 'video' ? 'videos' : 'audio';
+  const { dir, relPrefix } = resolveCategoryPaths(storagePath, category, projectSubdir);
+  const formats = kind === 'video' ? ['mp4', 'webm', 'mov'] : ['mp3', 'wav', 'm4a', 'ogg', 'aac', 'flac', 'webm'];
+  const cacheName = `${prefix || kind}_${createHash('sha256').update(source).digest('hex').slice(0, 24)}`;
+  let phase = 'write';
+  let pending;
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+    for (const ext of formats) {
+      const relative = `${relPrefix}/${cacheName}.${ext}`.replace(/\\/g, '/');
+      const stat = await fsp.stat(path.join(storagePath, relative)).catch(() => null);
+      if (stat?.isFile() && stat.size > 0) return relative;
+    }
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        phase = 'download';
+        const res = await fetchMedia(source, { method: 'GET', headers: { Accept: `${kind}/*,*/*` }, signal: AbortSignal.timeout(options.timeoutMs ?? 180000) });
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => {});
+          throw Object.assign(new Error(`HTTP ${res.status}`), { statusCode: res.status });
+        }
+        const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+        if (/^(?:image|audio|video)\//.test(contentType) && !contentType.startsWith(kind + '/')) {
+          await res.body?.cancel().catch(() => {});
+          throw Object.assign(new Error('下载返回的素材类型与请求不符：' + contentType), { statusCode: 422 });
+        }
+        const pathExt = new URL(source).pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+        let ext = formats.includes(pathExt) ? pathExt : formats[0];
+        if (contentType.includes('webm')) ext = 'webm';
+        else if (contentType.includes('wav')) ext = 'wav';
+        else if (contentType.includes('ogg')) ext = 'ogg';
+        const name = `${cacheName}.${ext}`;
+        const relative = `${relPrefix}/${name}`.replace(/\\/g, '/');
+        const final = path.join(dir, name);
+        pending = final + '.pending-' + randomUUID();
+        if (res.body && typeof Readable.fromWeb === 'function') await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(pending));
+        else await fsp.writeFile(pending, Buffer.from(await res.arrayBuffer()));
+        const stat = await fsp.stat(pending);
+        const handle = await fsp.open(pending, 'r');
+        const head = Buffer.alloc(128);
+        try { await handle.read(head, 0, head.length, 0); } finally { await handle.close(); }
+        if (!stat.size || /text\/|application\/json/i.test(contentType) || /^\s*(?:<!doctype|<html|\{)/i.test(head.toString('utf8'))) throw new Error('素材下载返回了空文件或错误页');
+        phase = 'write';
+        await fsp.rename(pending, final);
+        pending = null;
+        try { if (options.uploadToStorage !== false) await uploadLocalPathToStorage(storagePath, relative, contentType || `${kind}/${ext}`, log); }
+        catch (error) { log.warn('[素材缓存] 远程存储失败，已保留本地副本', { kind, local_path: relative, error: error.message }); }
+        return relative;
+      } catch (error) {
+        lastError = error;
+        if (['EACCES', 'EPERM', 'ENOSPC', 'ENOTDIR', 'EROFS'].includes(error.code)) phase = 'write';
+        if (pending) { await fsp.unlink(pending).catch(() => {}); pending = null; }
+        if (phase === 'write' || (error.statusCode >= 400 && error.statusCode < 500 && error.statusCode !== 429)) break;
+        log.warn('[素材缓存] 下载失败，准备重试', { kind, attempt, code: error.code, error: error.message });
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+      }
+    }
+    throw lastError || new Error('素材下载失败');
+  } catch (error) {
+    error.cachePhase = phase;
+    log.warn('[素材缓存] 保存失败', { kind, phase, code: error.code, error: error.message, storage_path: dir });
+    if (options.throwOnError) throw error;
     return null;
   }
 }
@@ -414,6 +453,8 @@ async function uploadLocalImageToProxy(storagePath, localPathOrUrl, log, tag) {
 module.exports = {
   uploadFile,
   downloadImageToLocal,
+  downloadMediaToLocal,
+  imageCacheFailureMessage,
   uploadToImageProxy,
   uploadLocalImageToProxy,
   normalizeImageProxySettings,

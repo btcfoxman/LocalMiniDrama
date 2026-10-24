@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const uploadService = require('./uploadService');
 const { prepareImageReferences } = require('./mediaReferenceService');
+const { withReferenceUploads, uploadReference } = require('./referenceUploadService');
 const { buildProxyCacheKey, getProxyCache, getProxyCacheValidated, deleteProxyCache, isProxyUrlAlive, setProxyCache } = require('./mediaProxyCache');
 const objectStorage = require('./objectStorageService');
 const storageLayout = require('./storageLayout');
@@ -1035,11 +1036,7 @@ async function dataImageRefToProxyUrl(value, log, db, tag) {
     return null;
   }
   if (!buffer.length) return null;
-  const cacheKey = buildProxyCacheKey(buffer, mimeType);
-  const cached = db ? await getProxyCacheValidated(db, cacheKey, log, tag) : null;
-  if (cached) return cached;
-  const proxyUrl = await uploadService.uploadToImageProxy(buffer, mimeType, log, tag || 'image_ref_proxy');
-  if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
+  const proxyUrl = await uploadReference(buffer, mimeType, log, db, tag || 'image_ref_proxy');
   return proxyUrl || null;
 }
 
@@ -1053,11 +1050,7 @@ async function localImageRefToProxyUrl(value, filesBaseUrl, storagePath, storage
   if (!filePath) return null;
   const buffer = await fs.promises.readFile(filePath);
   const mimeType = mimeFromPathLike(relPath);
-  const cacheKey = buildProxyCacheKey(buffer, mimeType);
-  const cached = db ? await getProxyCacheValidated(db, cacheKey, log, tag) : null;
-  if (cached) return cached;
-  const proxyUrl = await uploadService.uploadToImageProxy(buffer, mimeType, log, tag || 'image_ref_proxy');
-  if (proxyUrl && db) setProxyCache(db, cacheKey, proxyUrl);
+  const proxyUrl = await uploadReference(buffer, mimeType, log, db, tag || 'image_ref_proxy');
   return proxyUrl || null;
 }
 
@@ -1474,19 +1467,7 @@ async function callGeminiImageApi(db, config, log, opts) {
         ? { fileData: { fileUri, mimeType } }
         : { inlineData: { mimeType, data: imageBuffer.toString('base64') } };
     } else if (useImageProxy) {
-      const cacheKey = buildProxyCacheKey(imageBuffer, mimeType, imageProxyCfg);
-      let fileUri = await getProxyCacheValidated(db, cacheKey, log, `gemini_ig${image_gen_id}_ref${i}`);
-      if (fileUri) {
-        log.info('[Gemini图生] 参考图 缓存命中（图床）', { image_gen_id, ref_index: i });
-      } else {
-        log.info('[Gemini图生] 参考图 缓存未命中，上传图床 →', { image_gen_id, ref_index: i, elapsed: elapsed() });
-        fileUri = await uploadToImageProxy(imageBuffer, mimeType, log, image_gen_id);
-        if (fileUri) {
-          setProxyCache(db, cacheKey, fileUri);
-        } else {
-          log.warn('[Gemini image] image proxy upload failed; falling back to inlineData', { image_gen_id, ref_index: i, elapsed: elapsed() });
-        }
-      }
+      const fileUri = await uploadReference(imageBuffer, mimeType, log, db, `gemini_ig${image_gen_id}_ref${i}`, imageProxyCfg);
       imagePart = fileUri
         ? { fileData: { fileUri, mimeType } }
         : { inlineData: { mimeType, data: imageBuffer.toString('base64') } };
@@ -1598,6 +1579,10 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
 async function callImageApi(db, log, opts) {
+  return withReferenceUploads(() => callImageApiWithReferences(db, log, opts));
+}
+
+async function callImageApiWithReferences(db, log, opts) {
   opts = await prepareImageReferences(db, log, opts);
   const {
     prompt,
@@ -1954,6 +1939,7 @@ function createAndGenerateImage(db, log, opts) {
         return;
       }
       let localPath = null;
+      let cacheError;
       let finalImageUrl = result.image_url;
       db.prepare('UPDATE image_generations SET image_url = ?, updated_at = ? WHERE id = ?')
         .run(result.image_url, new Date().toISOString(), imageGenId);
@@ -1971,13 +1957,14 @@ function createAndGenerateImage(db, log, opts) {
           category,
           log,
           'ig',
-          projectSubdir
+          projectSubdir,
+          { throwOnError: true }
         );
         if (localPath) {
           finalImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '') || result.image_url;
         }
-      } catch (_) {}
-      if (!localPath) throw new Error('图片已生成，但本地缓存失败，请检查存储目录权限和网络后重启以恢复缓存');
+      } catch (error) { cacheError = error; }
+      if (!localPath) throw new Error(uploadService.imageCacheFailureMessage(cacheError));
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(

@@ -124,7 +124,7 @@ test('failed local saves are not reported as completed and can recover after res
   assert.equal(requests.filter(r => r[0] === 'POST').length, 1);
 });
 
-test('finishing a video preserves the storyboard image file association', async t => {
+test('a failed video download preserves the storyboard image and keeps the generated source for retry', async t => {
   const state = setup(t);
   const sb = state.db.prepare("INSERT INTO storyboards (episode_id, image_url, local_path) VALUES (1, '/static/images/frame.png', 'images/frame.png')").run();
   const video = state.db.prepare("INSERT INTO video_generations (storyboard_id, drama_id, status, model) VALUES (?, 0, 'pending', 'test')").run(sb.lastInsertRowid);
@@ -135,7 +135,10 @@ test('finishing a video preserves the storyboard image file association', async 
   const row = state.db.prepare('SELECT * FROM storyboards WHERE id = ?').get(sb.lastInsertRowid);
   assert.equal(row.local_path, 'images/frame.png');
   assert.equal(row.image_url, '/static/images/frame.png');
-  assert.equal(row.video_url, 'https://video.example.test/result.mp4');
+  assert.equal(row.video_url, null);
+  const result = state.db.prepare('SELECT status, video_url FROM video_generations WHERE id = ?').get(video.lastInsertRowid);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.video_url, 'https://video.example.test/result.mp4');
 });
 
 test('startup completes an image saved before interruption without reviving user cancellation', async t => {

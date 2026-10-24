@@ -38,6 +38,7 @@
           画布模式
         </el-button>
         <div class="header-actions">
+          <DesktopUpdateButton />
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -585,6 +586,7 @@
                       </div>
                     </div>
                     <div class="asset-cover-actions">
+                      <el-button v-if="isImageCacheFailure(char.error_msg || char.errorMsg)" size="small" type="warning" :loading="retryingImageCacheKeys.has('character-' + char.id)" @click="onRetryImageCache('character', char)">重试保存</el-button>
                       <el-button type="primary" size="small" :loading="generatingCharIds.has(char.id)" @click="onGenerateCharacterImage(char)">
                         <el-icon v-if="!generatingCharIds.has(char.id)"><MagicStick /></el-icon>
                         AI 生成
@@ -692,6 +694,7 @@
                           AI 生成
                         </el-button>
                       </el-tooltip>
+                      <el-button v-if="isImageCacheFailure(prop.error_msg || prop.errorMsg)" size="small" type="warning" :loading="retryingImageCacheKeys.has('prop-' + prop.id)" @click="onRetryImageCache('prop', prop)">重试保存</el-button>
                       <el-button type="success" size="small" :loading="uploadingResourceId === 'prop-' + prop.id" @click="onUploadResourceClick('prop', prop.id)">
                         <el-icon v-if="uploadingResourceId !== 'prop-' + prop.id"><Upload /></el-icon>
                         上传
@@ -797,6 +800,7 @@
                           AI 生成
                         </el-button>
                       </el-tooltip>
+                      <el-button v-if="isImageCacheFailure(scene.error_msg || scene.errorMsg)" size="small" type="warning" :loading="retryingImageCacheKeys.has('scene-' + scene.id)" @click="onRetryImageCache('scene', scene)">重试保存</el-button>
                       <el-button type="success" size="small" :loading="uploadingResourceId === 'scene-' + scene.id" @click="onUploadResourceClick('scene', scene.id)">
                         <el-icon v-if="uploadingResourceId !== 'scene-' + scene.id"><Upload /></el-icon>
                         上传
@@ -1312,6 +1316,7 @@
                         {{ getSbFirstImage(sb.id).prompt }}
                       </div>
                       <div class="sb-fl-slot-actions">
+                        <el-button v-if="hasSbCacheFailure(sb)" size="small" type="warning" :loading="retryingImageCacheKeys.has('storyboard-' + sb.id)" @click="onRetryImageCache('storyboard', sb)">重试保存</el-button>
                         <el-button type="primary" size="small" :loading="generatingSbFirstImageIds.has(sb.id)" @click="onGenerateSbFrameImage(sb, 'first')">生成</el-button>
                         <el-tooltip v-if="canUsePrevTailAsFirst(sb)" content="直接使用上一分镜的尾帧图片（高清原图）替换本首帧，画面更清晰" placement="top">
                           <el-button size="small" :loading="usingPrevTailAsFirstIds.has(sb.id)" @click="onUsePrevTailAsFirst(sb)">上镜尾帧</el-button>
@@ -1399,6 +1404,7 @@
                   </template>
                   <template v-else-if="sb.error_msg || sb.errorMsg">
                     <div class="sb-image-error" :title="sb.error_msg || sb.errorMsg">{{ sb.error_msg || sb.errorMsg }}</div>
+                    <el-button v-if="hasSbCacheFailure(sb)" size="small" type="warning" :loading="retryingImageCacheKeys.has('storyboard-' + sb.id)" @click="onRetryImageCache('storyboard', sb)">重试保存</el-button>
                     <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
                       <el-icon><Refresh /></el-icon>
                       重试
@@ -1436,6 +1442,7 @@
                 <div v-if="dragOverSbId === sb.id" class="sb-image-area-drop-hint">松开上传到首帧</div>
               </div>
               <div v-if="hasSbImage(sb) || storyboardUseFirstLastFrame" class="sb-image-actions">
+                <el-button v-if="hasSbCacheFailure(sb)" size="small" type="warning" :loading="retryingImageCacheKeys.has('storyboard-' + sb.id)" @click="onRetryImageCache('storyboard', sb)">重试保存生成图</el-button>
                 <template v-if="storyboardUseFirstLastFrame">
                   <el-button size="small" :loading="generatingSbFirstImageIds.has(sb.id) || generatingSbLastImageIds.has(sb.id)" @click="onGenerateSbFramePair(sb)">{{ hasSbFirstLastPair(sb) ? '重新生成首尾帧' : '一键生成首尾帧' }}</el-button>
                   <el-tooltip content="高清放大仅作用于首帧" placement="top">
@@ -1493,6 +1500,7 @@
                   <div v-if="getSbVideoError(sb.id)" class="sb-video-error">
                     {{ getSbVideoError(sb.id) }}
                   </div>
+                  <el-button v-if="String(getSbVideoError(sb.id)).startsWith('视频已生成，但本地缓存失败')" size="small" type="warning" :loading="retryingImageCacheKeys.has('video-' + sb.id)" @click="onRetryVideoCache(sb)">重试保存</el-button>
                   <el-button
                     type="primary"
                     size="small"
@@ -1506,6 +1514,7 @@
                 </template>
               </div>
               <!-- 视频历史条：有多条历史时显示，点击可切换 -->
+              <el-button v-if="getSbVideo(sb.id) && String(getSbVideoError(sb.id)).startsWith('视频已生成，但本地缓存失败')" size="small" type="warning" :loading="retryingImageCacheKeys.has('video-' + sb.id)" @click="onRetryVideoCache(sb)">重试保存生成视频</el-button>
               <div v-if="getVideoStripItems(sb.id).length" class="sb-videos-strip">
                 <el-tooltip content="历史视频：点击可切换为当前视频" placement="top" :show-arrow="false">
                   <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
@@ -2634,6 +2643,7 @@
 </template>
 
 <script setup>
+import DesktopUpdateButton from '@/components/DesktopUpdateButton.vue'
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -2663,6 +2673,7 @@ import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scri
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoModelCapabilities'
 import { assetImageUrl as normalizedAssetImageUrl, normalizeMediaUrl } from '@/utils/mediaUrl'
+import { isImageCacheFailure, retrySavedImage } from '@/utils/imageCacheRetry'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -3305,6 +3316,60 @@ const resourceImageFileInput = ref(null)
 const resourceUploadType = ref(null) // 'character' | 'prop' | 'scene'
 const resourceUploadId = ref(null)
 const uploadingResourceId = ref(null) // 'char-1' | 'prop-2' | 'scene-3'
+const retryingImageCacheKeys = reactive(new Set())
+
+function hasSbCacheFailure(sb) {
+  return (sbImages.value[sb.id] || []).some(image => image.status === 'failed' && isImageCacheFailure(image.error_msg))
+}
+
+async function onRetryImageCache(kind, item) {
+  const key = `${kind}-${item.id}`
+  if (retryingImageCacheKeys.has(key)) return
+  retryingImageCacheKeys.add(key)
+  try {
+    const oldUrl = item.image_url
+    const oldPath = item.local_path
+    const scope = { [`${kind}_id`]: item.id }
+    const image = await retrySavedImage(imagesAPI, scope)
+    const current = kind === 'storyboard' ? (store.currentEpisode?.storyboards || []).find(row => Number(row.id) === Number(item.id)) : findResource(kind, item.id)
+    if (current && (current.image_url !== oldUrl || current.local_path !== oldPath)) {
+      ElMessage.success('图片已保存到本地，当前主图已更换，未覆盖')
+      return
+    }
+    const patch = { image_url: image.image_url, local_path: image.local_path }
+    if (kind === 'character') await characterAPI.putImage(item.id, patch)
+    else if (kind === 'scene') await sceneAPI.update(item.id, patch)
+    else if (kind === 'prop') await propAPI.update(item.id, patch)
+    else {
+      const isLast = ['last', 'tail', 'last_frame', 'storyboard_last'].includes(image.frame_type)
+      await storyboardsAPI.update(item.id, isLast
+        ? { last_frame_image_id: image.id, last_frame_image_url: image.image_url, last_frame_local_path: image.local_path }
+        : { first_frame_image_id: image.id, ...patch })
+      item.error_msg = ''
+      item.errorMsg = ''
+      await loadSingleStoryboardMedia(item.id)
+    }
+    await loadDrama()
+    ElMessage.success('图片已保存到本地')
+  } catch (error) { ElMessage.error(error.message || '保存失败') }
+  finally { retryingImageCacheKeys.delete(key) }
+}
+
+async function onRetryVideoCache(sb) {
+  const key = `video-${sb.id}`
+  if (retryingImageCacheKeys.has(key)) return
+  retryingImageCacheKeys.add(key)
+  try {
+    const data = await videosAPI.list({ storyboard_id: sb.id, status: 'failed' })
+    const record = (data?.items || []).find(item => String(item.error_msg || '').startsWith('视频已生成，但本地缓存失败'))
+    if (!record) throw new Error('没有找到待恢复的视频结果')
+    await videosAPI.retryCache(record.id)
+    sbVideoErrors.value[sb.id] = ''
+    await loadSingleStoryboardMedia(sb.id)
+    ElMessage.success('视频已保存到本地')
+  } catch (error) { ElMessage.error(error.message || '保存失败') }
+  finally { retryingImageCacheKeys.delete(key) }
+}
 const dragOverResourceKey = ref(null) // 'char-1' | 'prop-2' | 'scene-3'
 const dragOverSbId = ref(null)
 // 公共库弹窗状态已移至各 composable
@@ -3665,12 +3730,12 @@ function openResourceImageEditor(type, item) {
   resourceEditorFileName.value = `${resourceDisplayName(type, item)}.png`
   showResourceImageEditor.value = true
 }
-/** 视频地址：优先后端保存的公网 video_url，local_path 只作为兜底 */
+/** 视频优先读取本地副本，避免上游临时链接过期。 */
 function assetVideoUrl(item) {
   if (!item) return ''
-  if (item.video_url) return imageUrl(item.video_url)
   const localPath = item.local_path && String(item.local_path).trim()
-  if (localPath) return '/static/' + localPath.replace(/^\//, '')
+  if (localPath) return normalizeMediaUrl(localPath)
+  if (item.video_url) return imageUrl(item.video_url)
   return ''
 }
 /** 远程视频须为 http(s)，避免上游 FAILURE 时把错误文案写入 video_url */
