@@ -3863,7 +3863,6 @@ function onSelectSbMainVideo(sb, video) {
   sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: video.id }
   storyboardsAPI.update(sb.id, {
     video_url: video.video_url || null,
-    local_path: video.local_path || undefined,
   }).catch(e => console.warn('[主视频] 保存后端失败', e))
 }
 /** 取该分镜最近一次视频生成的错误信息（从 API 返回的记录或本地即时错误） */

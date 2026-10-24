@@ -89,6 +89,16 @@ function repairDuplicateTopLevelMappings(raw) {
   return { text, repairedKeys };
 }
 
+function mergeBundledStorage(userStorage, bundledStorage) {
+  return {
+    ...bundledStorage,
+    // 配置升级不能改变已有素材所在的目录，包括尚未标记 user_customized 的旧版本。
+    local_path: userStorage?.local_path || bundledStorage.local_path,
+    user_customized: false,
+  };
+}
+
 module.exports = {
   repairDuplicateTopLevelMappings,
+  mergeBundledStorage,
 };

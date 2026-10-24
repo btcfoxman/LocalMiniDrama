@@ -1550,7 +1550,7 @@ const showImageAsyncSwitch = computed(() => {
   if (!['image', 'storyboard_image'].includes(service_type)) return false
   const p = String(provider || '').toLowerCase()
   const protocol = String(api_protocol || providerProtocolMap[p] || 'openai').toLowerCase()
-  return protocol === 'openai'
+  return ['openai', 'openai-compatible', 'openai_compatible', 'chatfire'].includes(protocol)
     && p !== 'agnes'
     && !/agnes-image|seedream|doubao/i.test(default_model || '')
     && !/apihub\.agnes-ai\.com/i.test(base_url || '')

@@ -4,6 +4,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const { randomUUID } = require('crypto');
+const { createHash } = require('crypto');
 const objectStorage = require('./objectStorageService');
 
 const fsp = fs.promises;
@@ -104,9 +105,7 @@ function downloadBufferViaNodeHttp(url, timeoutMs = 30000, redirectCount = 0) {
     };
     const req = mod.request(options, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const location = res.headers.location.startsWith('http')
-          ? res.headers.location
-          : `${parsed.protocol}//${parsed.host}${res.headers.location}`;
+        const location = new URL(res.headers.location, url).href;
         res.resume();
         return resolve(downloadBufferViaNodeHttp(location, timeoutMs, redirectCount + 1));
       }
@@ -145,7 +144,13 @@ async function saveBufferToStorage(storagePath, relativePath, buffer, mimeType, 
   const cleanPath = objectStorage.normalizeKey(relativePath);
   const filePath = path.join(storagePath, cleanPath);
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, buffer);
+  const pending = filePath + '.pending-' + randomUUID();
+  try {
+    await fsp.writeFile(pending, buffer);
+    await fsp.rename(pending, filePath);
+  } finally {
+    await fsp.unlink(pending).catch(() => {});
+  }
   const storage = loadStorageConfig();
   if (objectStorage.isS3Storage(storage)) {
     return objectStorage.uploadBuffer(storage, cleanPath, buffer, mimeType, log);
@@ -212,6 +217,16 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
   const { dir: categoryPath, relPrefix } = resolveCategoryPaths(storagePath, category, projectSubdir);
   try {
     ensureDir(categoryPath);
+    // 来源地址精确对应固定文件名，进程在写库前退出后仍能找回已写入的文件。
+    const cacheName = `${prefix || 'image'}_${createHash('sha256').update(imageUrl).digest('hex').slice(0, 24)}`;
+    for (const cachedExt of ['png', 'jpg', 'webp', 'gif', 'bmp']) {
+      const cachedName = `${cacheName}.${cachedExt}`;
+      const cached = path.join(categoryPath, cachedName);
+      try {
+        const stat = await fsp.stat(cached);
+        if (stat.isFile() && stat.size > 0) return `${relPrefix}/${cachedName}`.replace(/\\/g, '/');
+      } catch (_) {}
+    }
     let buffer;
     let ext = 'png';
     if (imageUrl.startsWith('data:')) {
@@ -236,24 +251,30 @@ async function downloadImageToLocal(storagePath, imageUrl, category, log, prefix
         } catch (e) {
           lastErr = e;
           log.warn('downloadImageToLocal: 下载失败，准备重试', { category, attempt, error: e.message, url: imageUrl.slice(0, 100) });
+          if (/^HTTP 4\d\d$/.test(e.message) && e.message !== 'HTTP 429') break;
           if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
         }
       }
       if (!buffer) {
-        log.warn('downloadImageToLocal: 3次重试均失败', { category, error: lastErr?.message });
+        log.warn('downloadImageToLocal: 图片下载失败', { category, error: lastErr?.message });
         return null;
       }
-      ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+      if (!buffer.length || /text\/|application\/json/i.test(contentType) || /^\s*(?:<!doctype|<html|\{)/i.test(buffer.subarray(0, 64).toString('utf8'))) {
+        throw new Error('图片下载返回了空文件或非图片内容');
+      }
+      ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : contentType.includes('gif') ? 'gif' : 'jpg';
     }
-    const name = `${prefix}${prefix ? '_' : ''}${randomUUID().slice(0, 8)}.${ext}`;
+    if (!buffer.length) throw new Error('图片数据为空');
+    const name = `${cacheName}.${ext}`;
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
-    await saveBufferToStorage(
-      storagePath,
-      relativePath,
-      buffer,
-      `image/${ext === 'jpg' ? 'jpeg' : ext}`,
-      log
-    );
+    try {
+      await saveBufferToStorage(storagePath, relativePath, buffer, `image/${ext === 'jpg' ? 'jpeg' : ext}`, log);
+    } catch (e) {
+      // S3 不可用时，已经落盘的图片仍必须回写 local_path，避免丢失缓存关联。
+      const saved = await fsp.readFile(path.join(storagePath, relativePath)).catch(() => null);
+      if (!saved?.equals(buffer)) throw e;
+      log.warn('[图片缓存] 远程存储上传失败，已保留本地副本', { local_path: relativePath, error: e.message });
+    }
     log.info('Image saved to local', { category, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return relativePath;
   } catch (e) {

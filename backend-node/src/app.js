@@ -23,6 +23,10 @@ function createApp() {
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
+  const { recoverImageCaches, imageCacheRoots } = require('./services/imageCacheRecovery');
+  setImmediate(() => {
+    recoverImageCaches(db, config, log).catch(e => log.warn('[图片缓存] 恢复未完成', { error: e.message }));
+  });
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));
@@ -50,6 +54,9 @@ function createApp() {
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
     app.use('/static', express.static(storageRoot));
+    for (const legacyRoot of imageCacheRoots(config).slice(1)) {
+      app.use('/static', express.static(legacyRoot));
+    }
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);
   }

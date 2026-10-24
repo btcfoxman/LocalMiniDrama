@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const yaml = require('js-yaml');
-const { repairDuplicateTopLevelMappings } = require('../configRecovery');
+const { repairDuplicateTopLevelMappings, mergeBundledStorage } = require('../configRecovery');
 
 describe('repairDuplicateTopLevelMappings', () => {
   it('merges duplicated mapping sections while preserving earlier values', () => {
@@ -40,5 +40,17 @@ describe('repairDuplicateTopLevelMappings', () => {
       text: raw,
       repairedKeys: [],
     });
+  });
+});
+
+describe('bundled storage updates', () => {
+  it('retains the image cache directory across repeated Windows launches and upgrades', () => {
+    const user = { type: 's3', local_path: './data/storage', endpoint: 'https://old.example.test', user_customized: false };
+    const bundled = { type: 'local', local_path: './data/storage-cache', endpoint: '' };
+    const next = mergeBundledStorage(user, bundled);
+    assert.equal(next.local_path, './data/storage');
+    assert.equal(next.type, 'local');
+    assert.equal(next.endpoint, '');
+    assert.deepEqual(mergeBundledStorage(next, bundled), next);
   });
 });

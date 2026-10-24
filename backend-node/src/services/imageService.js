@@ -1399,6 +1399,8 @@ async function processImageGeneration(db, log, imageGenId) {
 
     // ── Step 5: 保存图片到本地 ───────────────────────────────────────
     log.info('[图生] Step5 保存到本地 →', { id: imageGenId, elapsed: elapsed() });
+    db.prepare('UPDATE image_generations SET image_url = ?, updated_at = ? WHERE id = ?')
+      .run(result.image_url, new Date().toISOString(), imageGenId);
     const tSave = Date.now();
     let localPath = null;
     try {
@@ -1434,8 +1436,9 @@ async function processImageGeneration(db, log, imageGenId) {
         await normalizeSavedImageToTargetPixels(absNorm, imageSize, log, { id: imageGenId, size: imageSize });
       }
     } catch (saveErr) {
-      log.warn('[图生] Step5 保存失败（不影响结果）', { id: imageGenId, err: saveErr.message, elapsed: elapsed() });
+      log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErr.message, elapsed: elapsed() });
     }
+    if (!localPath) throw new Error('图片已生成，但本地缓存失败，请检查存储目录权限和网络后重启以恢复缓存');
 
     // 入库的 image_url：优先指向本地静态路径，避免前端仍用 Gemini 返回的 data URL
     let persistedImageUrl = result.image_url;

@@ -1,5 +1,5 @@
-import { assetImageUrl } from './mediaUrl'
-import { parseDramaMetadata } from './canvasLayout'
+import { assetImageUrl } from './mediaUrl.js'
+import { parseDramaMetadata } from './canvasLayout.js'
 
 export function dramaUsesFirstLastFrame(drama) {
   const meta = parseDramaMetadata(drama?.metadata)
@@ -101,8 +101,8 @@ export function resolveSbVideoRecord(sb, videosBySbId) {
     }
     return list[0]
   }
-  if (sb.video_url || sb.local_path) {
-    return { video_url: sb.video_url, local_path: sb.local_path }
+  if (sb.video_url) {
+    return { video_url: sb.video_url }
   }
   return null
 }

@@ -328,8 +328,8 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   }
   if (row.storyboard_id) {
     try {
-      db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-        finalVideoUrl, localPath, now, row.storyboard_id
+      db.prepare('UPDATE storyboards SET video_url = ?, updated_at = ? WHERE id = ?').run(
+        finalVideoUrl, now, row.storyboard_id
       );
       log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
         storyboard_id: row.storyboard_id,

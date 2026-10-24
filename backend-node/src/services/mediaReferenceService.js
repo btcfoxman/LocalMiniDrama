@@ -3,6 +3,7 @@ const path = require('path');
 const uploadService = require('./uploadService');
 const objectStorage = require('./objectStorageService');
 const proxyCache = require('./mediaProxyCache');
+const { imageCacheRoots } = require('./imageCacheRecovery');
 
 const MIME_TYPES = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
@@ -110,6 +111,23 @@ function createReferenceResolver(db, log, opts = {}) {
     const candidates = [...new Set([localPathHint, ...storedLocalPaths(db, raw), referenceRelativePath(raw, storage, opts.files_base_url)])]
       .map(value => safeLocalPath(storagePath, value)).filter(Boolean);
     let local = candidates.find(candidate => fs.existsSync(candidate.absolute) && fs.statSync(candidate.absolute).isFile());
+    if (!local) {
+      for (const candidate of candidates) {
+        for (const root of imageCacheRoots(cfg)) {
+          const legacy = safeLocalPath(root, candidate.relative);
+          if (!legacy || legacy.absolute === candidate.absolute) continue;
+          try {
+            const stat = await fs.promises.stat(legacy.absolute);
+            if (!stat.isFile() || !stat.size) continue;
+            await fs.promises.mkdir(path.dirname(candidate.absolute), { recursive: true });
+            await fs.promises.copyFile(legacy.absolute, candidate.absolute);
+            local = candidate;
+            break;
+          } catch (_) {}
+        }
+        if (local) break;
+      }
+    }
     if (!local && objectStorage.isS3Storage(storage)) {
       for (const candidate of candidates) {
         if (await uploadService.ensureLocalFile(storagePath, candidate.relative, log)) {

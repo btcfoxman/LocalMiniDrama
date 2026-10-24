@@ -767,7 +767,10 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
     return null;
   };
 
-  const sbUrl = sb ? buildUrl(sb.video_url, sb.local_path) : null;
+  const selectedVideo = sb?.video_url ? db.prepare(
+    "SELECT local_path FROM video_generations WHERE storyboard_id = ? AND video_url = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1"
+  ).get(storyboardId, sb.video_url) : null;
+  const sbUrl = sb ? buildUrl(sb.video_url, selectedVideo?.local_path) : null;
   const vgUrl = vg ? buildUrl(vg.video_url, vg.local_path) : null;
 
   // 策略：比较时间，取最新的

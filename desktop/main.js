@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Menu, Tray, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { repairDuplicateTopLevelMappings } = require('./configRecovery');
+const { repairDuplicateTopLevelMappings, mergeBundledStorage } = require('./configRecovery');
 
 // 显式固定 userData 目录，使开发模式与打包 exe 路径完全一致，防止 productName 变更导致路径漂移
 const USERDATA_DIR = path.join(app.getPath('appData'), 'overseasdrama-desktop');
@@ -146,7 +146,7 @@ function ensureBackendCwd(backendCwd) {
         changed = true;
       }
       if (shouldSyncBundledStorage(userCfg.storage, bundledCfg.storage)) {
-        userCfg.storage = { ...bundledCfg.storage, user_customized: false };
+        userCfg.storage = mergeBundledStorage(userCfg.storage, bundledCfg.storage);
         changed = true;
       }
       // 视频任务有效期是客户端恢复协议的一部分，升级时同步新默认值，

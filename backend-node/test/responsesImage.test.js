@@ -208,3 +208,32 @@ test('async image requests retain user negative prompts', async t => {
   assert.match(requests[0].body.input[0].content[0].text, /no logos, no watermarks/);
   assert.equal(requests[0].body.negative_prompt, undefined);
 });
+
+test('legacy OpenAI-compatible protocol names still use the enabled background mode', async t => {
+  const { cfg, requests } = await serverFor(t, [done]);
+  cfg.api_protocol = 'openai-compatible';
+  t.mock.method(aiConfigService, 'listConfigs', () => [cfg]);
+  assert.equal((await callImageApi(null, log, { model })).image_url, imageUrl);
+  assert.equal(requests[0].url, '/v1/responses');
+  assert.equal(requests[0].body.background, true);
+});
+
+test('explicit synchronous-capacity rejection falls back once to background generation', async t => {
+  const { cfg, requests } = await serverFor(t, [
+    { httpStatus: 429, data: { error: { message: 'Synchronous image capacity is busy; use background image generation or retry' } } },
+    done,
+  ]);
+  cfg.settings = JSON.stringify({ image_async: false });
+  t.mock.method(aiConfigService, 'listConfigs', () => [cfg]);
+  assert.equal((await callImageApi(null, log, { model })).image_url, imageUrl);
+  assert.deepEqual(requests.map(r => r.url), ['/images/generations', '/v1/responses']);
+  assert.equal(requests[1].body.background, true);
+});
+
+test('ordinary rate limits keep their original error and do not submit another task', async t => {
+  const { cfg, requests } = await serverFor(t, [{ httpStatus: 429, data: { error: { message: 'Insufficient quota' } } }]);
+  cfg.settings = JSON.stringify({ image_async: false });
+  t.mock.method(aiConfigService, 'listConfigs', () => [cfg]);
+  assert.match((await callImageApi(null, log, { model })).error, /429.*Insufficient quota/);
+  assert.equal(requests.length, 1);
+});

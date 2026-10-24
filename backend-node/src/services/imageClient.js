@@ -1735,7 +1735,7 @@ async function callImageApi(db, log, opts) {
   const configSettings = parseConfigSettings(config);
   const effectiveQuality = quality || configSettings.quality;
 
-  if (protocol === 'openai' && !isSeedream && !isAgnes && ![false, 0, 'false'].includes(configSettings.image_async)) {
+  const generateInBackground = () => {
     let taskId = opts.task_id;
     if (!taskId && image_gen_id) {
       taskId = db.prepare('SELECT task_id FROM image_generations WHERE id = ?').get(image_gen_id)?.task_id;
@@ -1752,6 +1752,10 @@ async function callImageApi(db, log, opts) {
         return true;
       },
     });
+  };
+  // 未匹配专用协议的旧配置也会走当前 OpenAI 兼容分支。
+  if (!isSeedream && !isAgnes && ![false, 0, 'false'].includes(configSettings.image_async)) {
+    return generateInBackground();
   }
 
   const body = {
@@ -1803,6 +1807,11 @@ async function callImageApi(db, log, opts) {
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     log.error('Image API failed', { status: httpStatus, body: raw.slice(0, 300) });
+    // 仅在服务商明确拒绝同步容量时回退；普通配额/限流错误不创建新的生成请求。
+    if (httpStatus === 429 && /synchronous image capacity|use background image generation/i.test(raw)) {
+      log.info('[图生] 同步容量不可用，切换后台生成', { image_gen_id, model, protocol });
+      return generateInBackground();
+    }
     let errMsg = '图片生成请求失败: ' + httpStatus;
     try {
       const errJson = JSON.parse(raw);
@@ -1944,6 +1953,8 @@ function createAndGenerateImage(db, log, opts) {
       }
       let localPath = null;
       let finalImageUrl = result.image_url;
+      db.prepare('UPDATE image_generations SET image_url = ?, updated_at = ? WHERE id = ?')
+        .run(result.image_url, new Date().toISOString(), imageGenId);
       try {
         const loadConfig = require('../config').loadConfig;
         const cfg = loadConfig();
@@ -1964,6 +1975,7 @@ function createAndGenerateImage(db, log, opts) {
           finalImageUrl = uploadService.buildPublicUrl(localPath, cfg.storage?.base_url || '') || result.image_url;
         }
       } catch (_) {}
+      if (!localPath) throw new Error('图片已生成，但本地缓存失败，请检查存储目录权限和网络后重启以恢复缓存');
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(
